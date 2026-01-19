@@ -1,0 +1,410 @@
+plugins {
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Use JUnit test framework.
+    testImplementation libs.junit
+
+    // This dependency is used by the application.
+    implementation libs.guava
+    
+    // JavaFX Controls
+    implementation libs.javafx.controls
+    implementation libs.javafx.fxml
+    
+    // Lombok for reducing boilerplate code
+    compileOnly libs.lombok
+    annotationProcessor libs.lombok
+    
+    // Log4j2 for logging
+    implementation libs.log4j.api
+    implementation libs.log4j.core
+}
+
+application {
+    mainClass = 'logviewer.Main'
+
+    // JavaFX実行のためのJVMオプション
+    applicationDefaultJvmArgs = [
+        '--add-opens', 'javafx.controls/javafx.scene.control.skin=ALL-UNNAMED',
+        '--add-opens', 'javafx.graphics/javafx.scene=ALL-UNNAMED'
+    ]
+}
+
+// JREとライブラリを含めた配布用パッケージを作成
+task createMinimalJRE {
+    description = 'Create minimal JRE with jlink for smaller footprint'
+    group = 'distribution'
+    
+    // Configuration cache対応: Providerを設定時に取得
+    def buildDirProvider = project.layout.buildDirectory
+    
+    doLast(new org.gradle.api.Action() {
+        void execute(def task) {
+            def logger = task.logger
+            def buildDirPath = buildDirProvider.get().asFile.absolutePath
+            def jreOutputDir = new File("$buildDirPath/jre-minimal")
+
+            // 既存のJREディレクトリを削除
+            if (jreOutputDir.exists()) {
+                logger.lifecycle("Removing existing JRE directory...")
+                jreOutputDir.deleteDir()
+            }
+
+            jreOutputDir.parentFile.mkdirs()
+
+            // 必要なモジュール最小限セット
+            def baseModules = ['java.base','java.desktop']
+
+            // Optionally include JavaFX modules when JavaFX jmods directory is provided.
+            // Provide path via environment variable JAVAFX_JMODS or Gradle property -PjavafxJmods=path
+            def javafxJmodsPath = System.getenv('JAVAFX_JMODS') ?: (project.hasProperty('javafxJmods') ? project.property('javafxJmods') : null)
+            def includeJavaFX = false
+            if (javafxJmodsPath) {
+                def javafxJmodsDir = new File(javafxJmodsPath)
+                if (javafxJmodsDir.exists()) {
+                    includeJavaFX = true
+                    logger.lifecycle("Found JavaFX jmods at: ${javafxJmodsDir.absolutePath}")
+                } else {
+                    logger.warn("JavaFX jmods path specified but not found: ${javafxJmodsPath}")
+                }
+            } else {
+                logger.lifecycle('No JavaFX jmods path provided (set JAVAFX_JMODS or -PjavafxJmods=...)')
+            }
+
+            def modules = baseModules.join(',')
+            if (includeJavaFX) {
+                modules += ',javafx.controls,javafx.fxml'
+            }
+
+            logger.lifecycle("Creating minimal JRE with jlink...")
+            logger.lifecycle("Modules: ${modules}")
+
+            def javaHome = System.getenv('JAVA_HOME') ?: System.getProperty('java.home')
+            if (!javaHome) {
+                throw new GradleException('JAVA_HOME environment variable not set')
+            }
+
+            def jmodsPath = new File(javaHome, 'jmods')
+            if (!jmodsPath.exists()) {
+                throw new GradleException("jmods directory not found at: ${jmodsPath.absolutePath}")
+            }
+
+            // Build module path string for jlink; include JavaFX jmods dir if provided
+            def jmodsPaths = [jmodsPath.absolutePath]
+            if (includeJavaFX) {
+                jmodsPaths << new File(javafxJmodsPath).absolutePath
+            }
+
+            logger.lifecycle("Using jmods from: ${jmodsPath.absolutePath}")
+            logger.lifecycle("Output directory: ${jreOutputDir.absolutePath}")
+
+            // ProcessBuilderを使用してjlinkを直接実行（Configuration cache対応）
+            def jlinkExe = new File(javaHome, 'bin/jlink.exe').absolutePath
+            def jmodsPathStr = jmodsPaths.join(File.pathSeparator)
+            def jreOutputPathStr = jreOutputDir.absolutePath
+
+            try {
+                def process = new ProcessBuilder(
+                    jlinkExe,
+                    '--module-path', jmodsPathStr,
+                    '--add-modules', modules,
+                    '--output', jreOutputPathStr,
+                    '--compress', '2',
+                    '--strip-debug',
+                    '--no-header-files',
+                    '--no-man-pages'
+                ).inheritIO().start()
+
+                def exitCode = process.waitFor()
+                if (exitCode != 0) {
+                    throw new GradleException("jlink command failed with exit code ${exitCode}")
+                }
+            } catch (Exception e) {
+                logger.error("jlink command failed.")
+                logger.error("JAVA_HOME: ${javaHome}")
+                logger.error("jmods path: ${jmodsPath.absolutePath}")
+                throw e
+            }
+
+            logger.lifecycle("✓ Minimal JRE created successfully")
+        }
+    })
+}
+
+task createWindowsDistributionWithJRE {
+    description = 'Create Windows distribution with minimal embedded JRE'
+    group = 'distribution'
+    dependsOn 'build', 'createMinimalJRE'
+    
+    // Configuration cache対応: Providerを設定時に取得
+    def buildDirProvider = project.layout.buildDirectory
+    
+        doLast(new org.gradle.api.Action() {
+                void execute(def task) {
+                        def logger = task.logger
+                        def buildDirPath = buildDirProvider.get().asFile.absolutePath
+                        def distDir = new File("$buildDirPath/distribution/JavaFXLogViewer")
+                        def jreSourceDir = new File("$buildDirPath/jre-minimal")
+                        def jreDestDir = new File("$distDir/jre")
+
+                        distDir.mkdirs()
+
+                        // JARファイルをコピー
+                        logger.lifecycle("Copying application JAR...")
+                        def jarFile = jar.archiveFile.get().asFile
+                        def libDir = new File(distDir, 'lib')
+                        libDir.mkdirs()
+                        java.nio.file.Files.copy(
+                            jarFile.toPath(),
+                            new File(libDir, jarFile.name).toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+
+                        // 依存ライブラリをコピー
+                        logger.lifecycle("Copying dependencies...")
+                        for (File f : configurations.runtimeClasspath.getFiles()) {
+                            try {
+                                java.nio.file.Files.copy(
+                                    f.toPath(),
+                                    new File(libDir, f.getName()).toPath(),
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                                )
+                            } catch (Exception e) {
+                                logger.warn("Failed to copy dependency: ${f.absolutePath} — ${e.message}")
+                            }
+                        }
+
+                        // JREをコピー
+                        logger.lifecycle("Copying minimal JRE...")
+                        if (jreSourceDir.exists()) {
+                            def srcPath = jreSourceDir.toPath()
+                            def destPath = jreDestDir.toPath()
+                            def stream = java.nio.file.Files.walk(srcPath)
+                            try {
+                                def iter = stream.iterator()
+                                while (iter.hasNext()) {
+                                    def p = iter.next()
+                                    def rel = srcPath.relativize(p)
+                                    def target = destPath.resolve(rel)
+                                    if (java.nio.file.Files.isDirectory(p)) {
+                                        java.nio.file.Files.createDirectories(target)
+                                    } else {
+                                        java.nio.file.Files.copy(p, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                                    }
+                                }
+                            } finally {
+                                stream.close()
+                            }
+                        } else {
+                            logger.warn("Source JRE directory does not exist: ${jreSourceDir.absolutePath}")
+                        }
+
+                        // スタンドアロン実行用バッチファイルを作成
+                        def runBat = new File(distDir, 'run.bat')
+                        def runBatLines = [
+                            '@echo off',
+                            'setlocal enabledelayedexpansion',
+                            'set SCRIPT_DIR=%~dp0',
+                            'set JRE_HOME=%SCRIPT_DIR%jre',
+                            'set LIB_DIR=%SCRIPT_DIR%lib',
+                            '',
+                            'REM ClassPathを構築',
+                            'set CLASSPATH=',
+                            'for /r "%LIB_DIR%" %%f in (*.jar) do (',
+                            '    set CLASSPATH=!CLASSPATH!;%%f',
+                            ')',
+                            '',
+                            'REM Ensure CLASSPATH does not start with a semicolon',
+                            'if "!CLASSPATH:~0,1!"==";" set CLASSPATH=!CLASSPATH:~1!',
+                            '',
+                            'REM JVM options (none by default when using classpath-based launch)',
+                            'set JVM_OPTS=',
+                            '',
+                            'REM Java 実行コマンド選択: JAVA_HOME があればそれを優先、なければ埋め込み JRE を使う',
+                            'set JAVA_CMD=',
+                            'REM Prefer javaw for GUI apps: check JAVA_HOME then JRE_HOME then PATH for javaw',
+                            'if defined JAVA_HOME (',
+                            '    if exist "%JAVA_HOME%\\bin\\javaw.exe" (',
+                            '        set "JAVA_CMD=%JAVA_HOME%\\bin\\javaw.exe"',
+                            '    )',
+                            ')',
+                            'if not defined JAVA_CMD (',
+                            '    if exist "%JRE_HOME%\\bin\\javaw.exe" (',
+                            '        set "JAVA_CMD=%JRE_HOME%\\bin\\javaw.exe"',
+                            '    )',
+                            ')',
+                            'if not defined JAVA_CMD (',
+                            '    where javaw >nul 2>nul',
+                            '    if %ERRORLEVEL%==0 (',
+                            '        set "JAVA_CMD=javaw"',
+                            '    )',
+                            ')',
+                            'if not defined JAVA_CMD (',
+                            '    echo Java launcher javaw.exe not found. Please install a JRE with javaw or set JAVA_HOME.',
+                            '    exit /b 1',
+                            ')',
+                            '',
+                            'REM アプリケーション実行',
+                            '"%JAVA_CMD%" %JVM_OPTS% -cp "!CLASSPATH!" logviewer.Main',
+                            '',
+                            'endlocal'
+                        ]
+                        def runBatContent = runBatLines.join('\n')
+                        // Write run.bat in Shift_JIS encoding for Windows
+                        runBat.withWriter('Shift_JIS') { writer ->
+                            // Ensure CRLF line endings for Windows batch file
+                            writer.write(runBatContent.replaceAll(/\r?\n/, '\r\n'))
+                        }
+
+                        // READMEを作成
+                        def readmeFile = new File(distDir, 'README.txt')
+                        def timestamp = new Date().format('yyyy-MM-dd HH:mm:ss')
+                        def readmeContent = """
+JavaFX Log Viewer - Windows版 (最小限JRE同梱)
+=============================================
+
+■ 機能
+- TSV/テキスト形式のログファイルを高速表示（最大2000万行）
+- 列ごとのフィルタリング（部分一致・正規表現対応）
+- 列のソート機能
+- セル単位での選択・コピー
+- ドラッグ＆ドロップでファイルを開く
+- 大容量ファイルのストリーミング読み込み
+
+■ 実行方法
+1. run.bat をダブルクリック
+     または
+     コマンドプロンプトから: run.bat
+
+2. メニューから「ファイル → Open...」または
+     ファイルをウィンドウにドラッグ＆ドロップ
+
+■ ディレクトリ構成
+JavaFXLogViewer/
+    ├── jre/              - Java実行環境（最小限JRE）
+    ├── lib/              - アプリケーション及び依存ライブラリ
+    ├── run.bat           - 実行ファイル（推奨）
+    └── README.txt        - このファイル
+
+■ 動作環境
+- OS: Windows 7以上
+- その他: すべてのランタイムが同梱されています
+
+■ 使い方
+- フィルタ: 列を選択してテキストを入力（部分一致）
+- 正規表現: /pattern/ の形式で入力（例: /ERROR|WARN/）
+- ソート: 列ヘッダーをクリック
+- コピー: セルを選択してCtrl+C
+- 詳細表示: 行をダブルクリック
+
+■ トラブルシューティング
+「run.bat は認識されていません」と表示される場合:
+    - run.bat があるディレクトリで右クリック → コマンドプロンプトを開く
+    - run.bat と入力して実行
+
+アプリが起動しない場合:
+    - jre\\bin\\java.exe が存在するか確認
+    - lib フォルダに .jar ファイルが複数存在するか確認
+
+■ 対応ファイル形式
+- TSVファイル (.tsv)
+- テキストファイル (.txt)
+- タブ区切りの任意のテキストファイル
+
+■ パッケージについて
+このパッケージは jlink で生成された最小限のJREを含んでいます。
+フットプリント削減のため、以下のモジュールのみを含みます:
+    - java.base: Java基本モジュール
+    - java.desktop: UI関連
+
+Version: 1.0
+Created: ${timestamp}
+"""
+                        readmeFile.text = readmeContent
+
+                        // ZIPファイルを作成（出力先を明示的に app/build/distribution にする）
+                        def zipFile = project.file('build/distribution/JavaFXLogViewer-Windows.zip')
+                        zipFile.parentFile.mkdirs()
+
+                        // ProcessBuilderを使用してPowerShellでZIPを圧縮（Configuration cache対応）
+                        def distDirPath = distDir.absolutePath
+                        def zipFilePath = zipFile.absolutePath
+
+                        logger.lifecycle("Creating ZIP archive...")
+                        try {
+                                def process = new ProcessBuilder(
+                                        'powershell.exe',
+                                        '-NoProfile',
+                                        '-Command',
+                                        "Compress-Archive -Path \"${distDirPath}\" -DestinationPath \"${zipFilePath}\" -Force"
+                                ).inheritIO().start()
+
+                                def exitCode = process.waitFor()
+                                if (exitCode != 0) {
+                                        throw new GradleException("ZIP creation failed with exit code ${exitCode}")
+                                }
+                        } catch (Exception e) {
+                                logger.error("ZIP creation failed.")
+                                throw e
+                        }
+
+                        def sizeInMB = (zipFile.size() / (1024*1024)).toInteger()
+                        logger.lifecycle("""
+========================================
+✓ Windows配布パッケージ作成完了
+========================================
+パッケージ: ${zipFile.absolutePath}
+
+内容:
+    - Application JAR
+    - すべての依存ライブラリ
+    - 最小限Java実行環境（jlink生成）
+    - 実行スクリプト（run.bat）
+    - ドキュメント
+
+利用方法:
+    1. ZIPファイルを解凍
+    2. run.bat をダブルクリック
+    3. ファイルメニューまたはD&Dでログファイルを開く
+
+パッケージサイズ: ${sizeInMB} MB
+========================================
+""")
+                }
+        })
+}
+
+task printDistributionInfo {
+    description = 'Show distribution package information'
+    group = 'distribution'
+    doLast {
+        println """
+配布用パッケージ作成タスク:
+  gradle createWindowsDistributionWithJRE : Windows用パッケージ作成（最小限JRE同梱）
+
+実行例:
+  gradle createWindowsDistributionWithJRE
+
+出力先:
+  build/distribution/JavaFXLogViewer-Windows.zip
+
+特徴:
+  - jlink で生成された最小限のJRE
+  - 不要なモジュール/ドキュメントを除外
+  - --compress=2 で圧縮
+  - フットプリント最小化
+  - JavaFX対応（必要なモジュール含む）
+""".stripIndent()
+    }
+}
