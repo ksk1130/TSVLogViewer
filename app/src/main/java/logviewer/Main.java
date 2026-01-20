@@ -480,15 +480,16 @@ public class Main extends Application {
         };
 
         task.setOnSucceeded(evt -> {
+            List<LogRow> result = task.getValue();
             long elapsedMillis = (System.nanoTime() - operationStartTime) / 1_000_000;
             double elapsedSeconds = elapsedMillis / 1000.0;
             // ファイル読み込み直後のフィルタではステータス更新をスキップ
-            if (!skipFilterStatusUpdate) {
-                updateStatus(String.format("フィルタ/ソートが完了しました。処理時間 %.2f 秒", elapsedSeconds));
+            if (!skipFilterStatusUpdate && !baseData.isEmpty()) {
+                updateStatus(String.format("フィルタ/ソートが完了しました。結果 %,d 行、処理時間 %.2f 秒", result.size(), elapsedSeconds));
             } else {
                 skipFilterStatusUpdate = false;
             }
-            tableData.setAll(task.getValue());
+            tableData.setAll(result);
         });
         task.setOnFailed(evt -> {
             Throwable ex = task.getException();
