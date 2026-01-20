@@ -84,7 +84,13 @@ public class Main extends Application {
         columnVisibilityItem.setOnAction(e -> showColumnVisibilityDialog());
         columnMenu.getItems().add(columnVisibilityItem);
         
-        menuBar.getMenus().addAll(fileMenu, columnMenu);
+        Menu goMenu = new Menu("移動(_G)");
+        MenuItem goToLineItem = new MenuItem("指定行へ移動...");
+        goToLineItem.setAccelerator(new KeyCodeCombination(KeyCode.G, KeyCombination.CONTROL_DOWN));
+        goToLineItem.setOnAction(e -> showGoToLineDialog());
+        goMenu.getItems().add(goToLineItem);
+        
+        menuBar.getMenus().addAll(fileMenu, columnMenu, goMenu);
 
         // 上部コントロール: カラム選択 + フィルタ
         columnSelector.getItems().add("All");
@@ -720,6 +726,77 @@ public class Main extends Application {
         ClipboardContent content = new ClipboardContent();
         content.putString(clipboardString.toString());
         Clipboard.getSystemClipboard().setContent(content);
+    }
+
+    /**
+     * 指定行へ移動するダイアログを表示します。
+     * ユーザーが入力した行番号が表示中のデータ（フィルタ適用後）に存在する場合、
+     * その行を選択してスクロールします。
+     */
+    private void showGoToLineDialog() {
+        if (tableData.isEmpty()) {
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle("移動");
+            alert.setHeaderText(null);
+            alert.setContentText("データが読み込まれていません。");
+            alert.showAndWait();
+            return;
+        }
+
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("指定行へ移動");
+        dialog.setHeaderText(null);
+        dialog.setContentText("移動先の行番号を入力してください:");
+
+        dialog.showAndWait().ifPresent(input -> {
+            try {
+                int lineNumber = Integer.parseInt(input.trim());
+                
+                if (lineNumber < 1) {
+                    showAlert("エラー", "行番号は1以上の整数を入力してください。");
+                    return;
+                }
+
+                // 表示中のデータから該当する行番号を持つ行を検索
+                int foundIndex = -1;
+                for (int i = 0; i < tableData.size(); i++) {
+                    if (tableData.get(i).getLineNumber() == lineNumber) {
+                        foundIndex = i;
+                        break;
+                    }
+                }
+
+                if (foundIndex >= 0) {
+                    // 該当行を選択してスクロール
+                    table.getSelectionModel().clearSelection();
+                    table.getSelectionModel().select(foundIndex);
+                    table.scrollTo(foundIndex);
+                    table.requestFocus();
+                } else {
+                    // 該当行が見つからない場合、フィルタで除外されているか存在しない
+                    if (lineNumber <= baseData.size()) {
+                        showAlert("情報", String.format("行番号 %d は現在のフィルタ条件で非表示になっています。", lineNumber));
+                    } else {
+                        showAlert("情報", String.format("行番号 %d は存在しません。\n（最大行番号: %d）", lineNumber, baseData.size()));
+                    }
+                }
+            } catch (NumberFormatException ex) {
+                showAlert("エラー", "有効な整数を入力してください。");
+            }
+        });
+    }
+
+    /**
+     * アラートダイアログを表示します。
+     * @param title ダイアログのタイトル
+     * @param message 表示するメッセージ
+     */
+    private void showAlert(String title, String message) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle(title);
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        alert.showAndWait();
     }
 
     /**
