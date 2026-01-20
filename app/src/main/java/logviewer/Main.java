@@ -275,9 +275,15 @@ public class Main extends Application {
         operationStartTime = System.nanoTime();
 
         // 非同期でファイル読み込み
-        Task<Void> task = new Task<>() {
+        class LoadResult {
+            final int columns;
+            final boolean truncated;
+            LoadResult(int columns, boolean truncated) { this.columns = columns; this.truncated = truncated; }
+        }
+
+        Task<LoadResult> task = new Task<>() {
             @Override
-            protected Void call() throws Exception {
+            protected LoadResult call() throws Exception {
                 int localColumnCount = 0;
                 boolean truncated = false;
 
@@ -308,12 +314,15 @@ public class Main extends Application {
                     }
                 }
 
-                final int finalColCount = localColumnCount;
-                final boolean finalTruncated = truncated;
-                Platform.runLater(() -> finalizeLoad(finalColCount, finalTruncated));
-                return null;
+                return new LoadResult(localColumnCount, truncated);
             }
         };
+
+        // 読み込み成功時はTaskのハンドラでUI更新（JavaFXスレッド上で実行される）
+        task.setOnSucceeded(ev -> {
+            LoadResult res = task.getValue();
+            finalizeLoad(res.columns, res.truncated);
+        });
 
         task.setOnFailed(e -> {
             Throwable ex = task.getException();
@@ -335,6 +344,10 @@ public class Main extends Application {
      * @param truncated 行数上限で打ち切られた場合は true
      */
     private void finalizeLoad(int columns, boolean truncated) {
+        // columnSelectorの設定でリスナーが発火してrefreshAsyncが呼ばれる可能性があるため、
+        // 最初にフラグを設定してoperationStartTimeが上書きされないようにする
+        skipFilterStatusUpdate = true;
+        
         if (columns == 0) {
             table.setPlaceholder(new Label("No data"));
             return;
@@ -354,11 +367,10 @@ public class Main extends Application {
 
         long elapsedMillis = (System.nanoTime() - operationStartTime) / 1_000_000;
         double elapsedSeconds = elapsedMillis / 1000.0;
-        updateStatus(String.format("ファイル読み込みが完了しました。処理時間 %.2f 秒", elapsedSeconds));
+        updateStatus(String.format("ファイル読み込みが完了しました。読み込み行数 %,d 行、処理時間 %.2f 秒", baseData.size(), elapsedSeconds));
 
-        // ファイル読み込み後の初回フィルタではステータス更新をスキップ
-        skipFilterStatusUpdate = true;
-        refreshAsync();
+        // 読み込んだデータをテーブルに直接設定（初期状態は行番号順なのでソート不要）
+        tableData.setAll(baseData);
 
         if (truncated) {
             String message = String.format("メモリ使用量を抑えるため、ファイルは %,d 行で打ち切られました。", MAX_ROWS);
@@ -457,7 +469,10 @@ public class Main extends Application {
         String selectedColumn = columnSelector.getValue();
         int targetSortIndex = sortColumnIndex;
         boolean ascending = sortAscending;
-        operationStartTime = System.nanoTime();
+        // ファイル読み込み直後の初回フィルタでは時刻を上書きしない
+        if (!skipFilterStatusUpdate) {
+            operationStartTime = System.nanoTime();
+        }
 
         Task<List<LogRow>> task = new Task<>() {
             @Override
@@ -483,12 +498,11 @@ public class Main extends Application {
             List<LogRow> result = task.getValue();
             long elapsedMillis = (System.nanoTime() - operationStartTime) / 1_000_000;
             double elapsedSeconds = elapsedMillis / 1000.0;
-            // ファイル読み込み直後のフィルタではステータス更新をスキップ
+            // ファイル読み込み直後のリスナー発火ではステータス更新をスキップ
             if (!skipFilterStatusUpdate && !baseData.isEmpty()) {
                 updateStatus(String.format("フィルタ/ソートが完了しました。結果 %,d 行、処理時間 %.2f 秒", result.size(), elapsedSeconds));
-            } else {
-                skipFilterStatusUpdate = false;
             }
+            skipFilterStatusUpdate = false;
             tableData.setAll(result);
         });
         task.setOnFailed(evt -> {
