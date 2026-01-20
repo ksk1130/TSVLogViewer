@@ -275,12 +275,6 @@ public class Main extends Application {
         operationStartTime = System.nanoTime();
 
         // 非同期でファイル読み込み
-        class LoadResult {
-            final int columns;
-            final boolean truncated;
-            LoadResult(int columns, boolean truncated) { this.columns = columns; this.truncated = truncated; }
-        }
-
         Task<LoadResult> task = new Task<>() {
             @Override
             protected LoadResult call() throws Exception {
