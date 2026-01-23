@@ -434,19 +434,84 @@ public class Main extends Application {
         lineCol.setCellFactory(col -> new TableCell<>() {
             {
                 setStyle("-fx-alignment: CENTER-RIGHT;");
-                setOnMouseClicked(evt -> {
+                addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, evt -> {
                     if (!isEmpty() && getTableRow() != null) {
                         int rowIndex = getIndex();
                         if (rowIndex >= 0 && rowIndex < table.getItems().size()) {
+                            // イベントの状態を事前にキャプチャ
+                            boolean ctrlDown = evt.isControlDown();
+                            boolean shiftDown = evt.isShiftDown();
+                            int currentFocusedRow = table.getFocusModel().getFocusedIndex();
+                            
                             TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
-                            sm.clearSelection();
-                            // この行の全セルを選択
-
-                            for (TableColumn<LogRow, ?> column : table.getColumns()) {
-                                sm.select(rowIndex, column);
+                            List<TableColumn<LogRow, ?>> columns = table.getColumns();
+                            
+                            if (columns.isEmpty()) return;
+                            
+                            // Ctrlキー押下時: トグル選択
+                            if (ctrlDown) {
+                                // 現在の選択を保存
+                                @SuppressWarnings("unchecked")
+                                ObservableList<TablePosition<LogRow, ?>> selectedCells = 
+                                    (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) sm.getSelectedCells();
+                                List<TablePosition<LogRow, ?>> savedSelection = new ArrayList<>(selectedCells);
+                                
+                                // この行が選択されているかチェック
+                                boolean alreadySelected = savedSelection.stream()
+                                    .anyMatch(pos -> pos.getRow() == rowIndex);
+                                
+                                sm.clearSelection();
+                                
+                                if (alreadySelected) {
+                                    // 選択解除: この行以外を再選択
+                                    for (TablePosition<LogRow, ?> pos : savedSelection) {
+                                        if (pos.getRow() != rowIndex) {
+                                            sm.select(pos.getRow(), pos.getTableColumn());
+                                        }
+                                    }
+                                } else {
+                                    // 既存の選択を再適用
+                                    for (TablePosition<LogRow, ?> pos : savedSelection) {
+                                        sm.select(pos.getRow(), pos.getTableColumn());
+                                    }
+                                    // この行の全セルを追加
+                                    for (TableColumn<LogRow, ?> column : columns) {
+                                        sm.select(rowIndex, column);
+                                    }
+                                }
+                                table.getFocusModel().focus(rowIndex, lineCol);
+                                evt.consume();
                             }
-                            table.getFocusModel().focus(rowIndex, lineCol);
-                            evt.consume();
+                            // Shiftキー押下時: 範囲選択
+                            else if (shiftDown) {
+                                if (currentFocusedRow >= 0 && currentFocusedRow < table.getItems().size()) {
+                                    int startRow = Math.min(currentFocusedRow, rowIndex);
+                                    int endRow = Math.max(currentFocusedRow, rowIndex);
+                                    
+                                    sm.clearSelection();
+                                    for (int r = startRow; r <= endRow; r++) {
+                                        for (TableColumn<LogRow, ?> column : columns) {
+                                            sm.select(r, column);
+                                        }
+                                    }
+                                } else {
+                                    sm.clearSelection();
+                                    for (TableColumn<LogRow, ?> column : columns) {
+                                        sm.select(rowIndex, column);
+                                    }
+                                }
+                                table.getFocusModel().focus(rowIndex, lineCol);
+                                evt.consume();
+                            }
+                            // 修飾キーなし: 通常の単一行選択
+                            else {
+                                sm.clearSelection();
+                                for (TableColumn<LogRow, ?> column : columns) {
+                                    sm.select(rowIndex, column);
+                                }
+                                table.getFocusModel().focus(rowIndex, lineCol);
+                                evt.consume();
+                            }
                         }
                     }
                 });
@@ -724,7 +789,8 @@ public class Main extends Application {
      */
     private void copySelection() {
         TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
-        ObservableList<TablePosition> selectedCells = sm.getSelectedCells();
+        @SuppressWarnings("unchecked")
+        ObservableList<TablePosition<LogRow, ?>> selectedCells = (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) sm.getSelectedCells();
         
         if (selectedCells.isEmpty()) {
             return;
@@ -742,7 +808,7 @@ public class Main extends Application {
             boolean allColumnsSelected = true;
             for (TableColumn<LogRow, ?> col : table.getColumns()) {
                 boolean found = false;
-                for (TablePosition pos : selectedCells) {
+                for (TablePosition<LogRow, ?> pos : selectedCells) {
                     if (pos.getRow() == firstRow && pos.getTableColumn() == col) {
                         found = true;
                         break;
@@ -759,7 +825,7 @@ public class Main extends Application {
         if (isFullRowSelection) {
             // 行全体が選択されている場合 - タブ区切りで行全体をコピー
             List<Integer> processedRows = new ArrayList<>();
-            for (TablePosition pos : selectedCells) {
+            for (TablePosition<LogRow, ?> pos : selectedCells) {
                 int row = pos.getRow();
                 if (!processedRows.contains(row)) {
                     processedRows.add(row);
@@ -773,7 +839,7 @@ public class Main extends Application {
             }
         } else {
             // 単一セルまたは部分選択の場合 - 選択セルをコピー
-            for (TablePosition pos : selectedCells) {
+            for (TablePosition<LogRow, ?> pos : selectedCells) {
                 if (currentRow != -1 && currentRow != pos.getRow()) {
                     clipboardString.append("\n");
                 }
