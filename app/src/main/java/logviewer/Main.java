@@ -3,6 +3,7 @@ package logviewer;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
+import javafx.beans.binding.Bindings;
 import javafx.beans.property.ReadOnlyIntegerWrapper;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -90,7 +91,16 @@ public class Main extends Application {
         goToLineItem.setOnAction(e -> showGoToLineDialog());
         goMenu.getItems().add(goToLineItem);
         
-        menuBar.getMenus().addAll(fileMenu, columnMenu, goMenu);
+        // 編集メニュー: コピー(Ctrl-C)
+        Menu editMenu = new Menu("編集(_E)");
+        MenuItem copyItem = new MenuItem("コピー");
+        copyItem.setAccelerator(new KeyCodeCombination(KeyCode.C, KeyCombination.CONTROL_DOWN));
+        copyItem.setOnAction(e -> copySelection());
+        // 選択がないときは無効化
+        copyItem.disableProperty().bind(Bindings.isEmpty(table.getSelectionModel().getSelectedCells()));
+        editMenu.getItems().addAll(copyItem);
+
+        menuBar.getMenus().addAll(fileMenu, editMenu, columnMenu, goMenu);
 
         // 上部コントロール: カラム選択 + フィルタ
         columnSelector.getItems().add("All");
