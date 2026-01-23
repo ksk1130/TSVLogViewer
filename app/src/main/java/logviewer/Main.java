@@ -9,6 +9,7 @@ import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.input.Clipboard;
@@ -20,6 +21,8 @@ import javafx.scene.input.KeyCombination;
 import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -400,8 +403,34 @@ public class Main extends Application {
         // 行番号カラム（データモデルには含まれない）
         TableColumn<LogRow, Number> lineCol = new TableColumn<>("Line");
         lineCol.setReorderable(false);
-        lineCol.setPrefWidth(70);
+        lineCol.setPrefWidth(81);
         lineCol.setCellValueFactory(cd -> new ReadOnlyIntegerWrapper(cd.getValue().getLineNumber()));
+        lineCol.setSortable(false); // ボタン操作でのみソート
+
+        Label lineHeaderLabel = new Label(lineCol.getText());
+        Button lineSortAscButton = new Button("▲");
+        Button lineSortDescButton = new Button("▼");
+        lineSortAscButton.setFocusTraversable(false);
+        lineSortDescButton.setFocusTraversable(false);
+        lineSortAscButton.setPadding(new Insets(0, 4, 0, 4));
+        lineSortDescButton.setPadding(new Insets(0, 4, 0, 4));
+        lineSortAscButton.setOnAction(e -> {
+            table.getSortOrder().setAll(lineCol);
+            lineCol.setSortType(TableColumn.SortType.ASCENDING);
+            table.sort();
+        });
+        lineSortDescButton.setOnAction(e -> {
+            table.getSortOrder().setAll(lineCol);
+            lineCol.setSortType(TableColumn.SortType.DESCENDING);
+            table.sort();
+        });
+        Region lineSpacer = new Region();
+        HBox.setHgrow(lineSpacer, Priority.ALWAYS);
+        HBox lineHeaderBox = new HBox(4, lineHeaderLabel, lineSpacer, lineSortAscButton, lineSortDescButton);
+        lineHeaderBox.setAlignment(Pos.CENTER_RIGHT);
+        lineCol.setText(null);
+        lineCol.setGraphic(lineHeaderBox);
+
         lineCol.setCellFactory(col -> new TableCell<>() {
             {
                 setStyle("-fx-alignment: CENTER-RIGHT;");
@@ -436,9 +465,35 @@ public class Main extends Application {
             final int colIndex = i;
             TableColumn<LogRow, String> col = new TableColumn<>("Col " + i);
             col.setCellValueFactory(cellData -> new SimpleStringProperty(cellData.getValue().getField(colIndex)));
-            col.setPrefWidth(200);
+            col.setPrefWidth(150);
             col.setComparator((a, b) -> a.compareToIgnoreCase(b));
             col.setUserData(colIndex); // カスタムソート用にインデックスを保持
+            col.setSortable(false); // ヘッダ全体のクリックでソートさせず、ボタン操作に限定
+
+            Label headerLabel = new Label(col.getText());
+            Button sortAscButton = new Button("▲");
+            Button sortDescButton = new Button("▼");
+            sortAscButton.setFocusTraversable(false);
+            sortDescButton.setFocusTraversable(false);
+            sortAscButton.setPadding(new Insets(0, 4, 0, 4));
+            sortDescButton.setPadding(new Insets(0, 4, 0, 4));
+            sortAscButton.setOnAction(e -> {
+                table.getSortOrder().setAll(col);
+                col.setSortType(TableColumn.SortType.ASCENDING);
+                table.sort();
+            });
+            sortDescButton.setOnAction(e -> {
+                table.getSortOrder().setAll(col);
+                col.setSortType(TableColumn.SortType.DESCENDING);
+                table.sort();
+            });
+
+            Region spacer = new Region();
+            HBox.setHgrow(spacer, Priority.ALWAYS);
+            HBox headerBox = new HBox(4, headerLabel, spacer, sortAscButton, sortDescButton);
+            headerBox.setAlignment(Pos.CENTER_RIGHT);
+            col.setText(null);
+            col.setGraphic(headerBox);
             
             // カラムヘッダ用のコンテキストメニュー
             ContextMenu headerMenu = new ContextMenu();
