@@ -51,6 +51,8 @@ public class Main extends Application {
     // 定数: バッチサイズ
     private static final int BATCH_SIZE = 5_000;
 
+    private static final String LINE_SEPARATOR = "\r\n";
+
     private final List<LogRow> baseData = new ArrayList<>();
     private final ObservableList<LogRow> tableData = FXCollections.observableArrayList();
     private final TableView<LogRow> table = new TableView<>();
@@ -79,9 +81,19 @@ public class Main extends Application {
         MenuItem openItem = new MenuItem("開く...");
         openItem.setAccelerator(new KeyCodeCombination(KeyCode.O, KeyCombination.CONTROL_DOWN));
         openItem.setOnAction(e -> openFile(primaryStage));
+        
+        MenuItem exportDisplayedItem = new MenuItem("表示中のデータをエクスポート...");
+        exportDisplayedItem.setOnAction(e -> exportDisplayedData(primaryStage));
+        exportDisplayedItem.disableProperty().bind(Bindings.isEmpty(tableData));
+        
+        MenuItem exportSelectionItem = new MenuItem("選択セルをエクスポート...");
+        exportSelectionItem.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN, KeyCombination.SHIFT_DOWN));
+        exportSelectionItem.setOnAction(e -> exportSelectedCells(primaryStage));
+        exportSelectionItem.disableProperty().bind(Bindings.isEmpty(table.getSelectionModel().getSelectedCells()));
+        
         MenuItem exitItem = new MenuItem("終了");
         exitItem.setOnAction(e -> Platform.exit());
-        fileMenu.getItems().addAll(openItem, exitItem);
+        fileMenu.getItems().addAll(openItem, new SeparatorMenuItem(), exportDisplayedItem, exportSelectionItem, new SeparatorMenuItem(), exitItem);
         
         Menu columnMenu = new Menu("カラム(_C)");
         MenuItem columnVisibilityItem = new MenuItem("カラムの表示/非表示...");
@@ -136,7 +148,7 @@ public class Main extends Application {
                     a.setHeaderText(null);
                     StringBuilder sb = new StringBuilder();
                     for (int i = 0; i < r.fieldCount(); i++) {
-                        sb.append("[").append(i).append("]\t").append(r.getField(i)).append("\n");
+                        sb.append("[").append(i).append("]\t").append(r.getField(i)).append(LINE_SEPARATOR);
                     }
                     a.setContentText(sb.toString());
                     a.showAndWait();
@@ -239,7 +251,7 @@ public class Main extends Application {
                     String fileName = file.getName().toLowerCase(Locale.ROOT);
                     // TSV/TXTファイルのみを受け入れる
                     if (fileName.endsWith(".tsv") || fileName.endsWith(".txt")) {
-                        streamLoadFile(file.toPath());
+                        streamLoadFile(file.toPath(), stage);
                         success = true;
                     } else {
                         Alert alert = new Alert(Alert.AlertType.WARNING);
@@ -266,7 +278,7 @@ public class Main extends Application {
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV / Text files", "*.tsv", "*.txt", "*.*"));
         File f = chooser.showOpenDialog(stage);
         if (f != null) {
-            streamLoadFile(f.toPath());
+            streamLoadFile(f.toPath(), stage);
         }
     }
 
@@ -276,7 +288,7 @@ public class Main extends Application {
      * 行数がMAX_ROWSに達したら読み込みを打ち切り、完了後にカラムを再構築します。
      * @param path 読み込むファイルのパス
      */
-    private void streamLoadFile(Path path) {
+    private void streamLoadFile(Path path, Stage stage) {
         Task<?> previous = currentTask.getAndSet(null);
         // 以前のタスクがあればキャンセル
         if (previous != null) {
@@ -299,6 +311,8 @@ public class Main extends Application {
             protected LoadResult call() throws Exception {
                 int localColumnCount = 0;
                 boolean truncated = false;
+                updateProgress(0, MAX_ROWS);
+                updateMessage("0 行読み込み中...");
 
                 try (BufferedReader br = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                     String line;
@@ -316,6 +330,11 @@ public class Main extends Application {
                         buffer.add(new LogRow(parts, count + 1));
                         count++;
 
+                        if (count % 1_000 == 0) {
+                            updateProgress(count, MAX_ROWS);
+                            updateMessage(String.format("%,d 行読み込み中...", count));
+                        }
+
                         if (buffer.size() >= BATCH_SIZE) {
                             baseData.addAll(buffer);
                             buffer.clear();
@@ -325,6 +344,8 @@ public class Main extends Application {
                     if (!buffer.isEmpty()) {
                         baseData.addAll(buffer);
                     }
+                    updateProgress(count, MAX_ROWS);
+                    updateMessage(String.format("読み込み完了 処理中... (%,d 行)", count));
                 }
 
                 return new LoadResult(localColumnCount, truncated);
@@ -344,6 +365,9 @@ public class Main extends Application {
             table.setPlaceholder(new Label("TSVログファイルを開いてください (ファイル -> 開く...)"));
             updateStatus("ファイル読み込みに失敗しました");
         });
+
+        // 進捗ダイアログを表示
+        showProgressDialog(task, "ファイル読み込み中...", stage);
 
         Thread t = new Thread(task, "log-load-thread");
         t.setDaemon(true);
@@ -834,14 +858,14 @@ public class Main extends Application {
                         if (i > 0) clipboardString.append("\t");
                         clipboardString.append(logRow.getField(i));
                     }
-                    clipboardString.append("\n");
+                    clipboardString.append(LINE_SEPARATOR);
                 }
             }
         } else {
             // 単一セルまたは部分選択の場合 - 選択セルをコピー
             for (TablePosition<LogRow, ?> pos : selectedCells) {
                 if (currentRow != -1 && currentRow != pos.getRow()) {
-                    clipboardString.append("\n");
+                    clipboardString.append(LINE_SEPARATOR);
                 }
                 currentRow = pos.getRow();
                 
@@ -908,13 +932,265 @@ public class Main extends Application {
                     if (lineNumber <= baseData.size()) {
                         showAlert("情報", String.format("行番号 %d は現在のフィルタ条件で非表示になっています。", lineNumber));
                     } else {
-                        showAlert("情報", String.format("行番号 %d は存在しません。\n（最大行番号: %d）", lineNumber, baseData.size()));
+                        showAlert("情報", String.format("行番号 %d は存在しません。%s（最大行番号: %d）", lineNumber, LINE_SEPARATOR, baseData.size()));
                     }
                 }
             } catch (NumberFormatException ex) {
                 showAlert("エラー", "有効な整数を入力してください。");
             }
         });
+    }
+
+    /**
+     * 現在表示されているデータをTSVファイルにエクスポートします。
+     * フィルタ/ソート適用後のデータが対象です。
+     * @param stage ファイル保存ダイアログを表示するステージ
+     */
+    private void exportDisplayedData(Stage stage) {
+        if (tableData.isEmpty()) {
+            showAlert("情報", "エクスポートするデータがありません。");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("表示データをエクスポート");
+        chooser.setInitialFileName("exported_data.tsv");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV files", "*.tsv"));
+        File file = chooser.showSaveDialog(stage);
+
+        if (file != null) {
+            // データのスナップショットを取得（UIスレッドで）
+            List<LogRow> dataSnapshot = new ArrayList<>(tableData);
+            int columnCount = table.getColumns().size() - 1; // Line列を除く
+            Path outputPath = file.toPath();
+
+            // バックグラウンドタスクで処理
+            Task<Integer> task = new Task<>() {
+                @Override
+                protected Integer call() throws Exception {
+                    StringBuilder content = new StringBuilder();
+                    int rowCount = 0;
+
+                    for (LogRow row : dataSnapshot) {
+                        if (isCancelled()) break;
+                        
+                        for (int i = 0; i < row.fieldCount() && i < columnCount; i++) {
+                            if (i > 0) content.append("\t");
+                            content.append(row.getField(i));
+                        }
+                        content.append(LINE_SEPARATOR);
+                        rowCount++;
+
+                        // 1000行ごとに進捗更新
+                        if (rowCount % 1000 == 0) {
+                            updateProgress(rowCount, dataSnapshot.size());
+                        }
+                    }
+
+                    if (!isCancelled()) {
+                        Files.writeString(outputPath, content.toString(), StandardCharsets.UTF_8);
+                    }
+                    
+                    return rowCount;
+                }
+            };
+
+            task.setOnSucceeded(evt -> {
+                int rowCount = task.getValue();
+                showAlert("成功", String.format("%d 行をエクスポートしました。", rowCount));
+            });
+
+            task.setOnFailed(evt -> {
+                Throwable ex = task.getException();
+                Alert alert = new Alert(Alert.AlertType.ERROR);
+                alert.setTitle("エラー");
+                alert.setHeaderText("エクスポートに失敗しました");
+                alert.setContentText(ex == null ? "不明なエラー" : ex.getMessage());
+                alert.showAndWait();
+            });
+
+            // プログレスダイアログを表示
+            showProgressDialog(task, "エクスポート中...", stage);
+
+            Thread t = new Thread(task, "export-data-thread");
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    /**
+     * 選択されているセルをTSVファイルにエクスポートします。
+     * 行全体が選択されている場合はタブ区切り、部分選択の場合は選択セルのみをエクスポートします。
+     * @param stage ファイル保存ダイアログを表示するステージ
+     */
+    private void exportSelectedCells(Stage stage) {
+        TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
+        @SuppressWarnings("unchecked")
+        ObservableList<TablePosition<LogRow, ?>> selectedCells = 
+            (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) sm.getSelectedCells();
+
+        if (selectedCells.isEmpty()) {
+            showAlert("情報", "エクスポートするセルが選択されていません。");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("選択セルをエクスポート");
+        chooser.setInitialFileName("selected_cells.tsv");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV files", "*.tsv"));
+        File file = chooser.showSaveDialog(stage);
+
+        if (file != null) {
+            // 選択セルのスナップショットを取得（UIスレッドで）
+            List<TablePosition<LogRow, ?>> cellsSnapshot = new ArrayList<>(selectedCells);
+            List<TableColumn<LogRow, ?>> columnsSnapshot = new ArrayList<>(table.getColumns());
+            List<LogRow> itemsSnapshot = new ArrayList<>(table.getItems());
+            Path outputPath = file.toPath();
+
+            // バックグラウンドタスクで処理
+            Task<Integer> task = new Task<>() {
+                @Override
+                protected Integer call() throws Exception {
+                    StringBuilder content = new StringBuilder();
+                    int currentRow = -1;
+                    boolean isFullRowSelection = false;
+                    
+                    // 行全体が選択されているか確認
+                    if (cellsSnapshot.size() >= columnsSnapshot.size()) {
+                        int firstRow = cellsSnapshot.get(0).getRow();
+                        boolean allColumnsSelected = true;
+                        for (TableColumn<LogRow, ?> col : columnsSnapshot) {
+                            boolean found = false;
+                            for (TablePosition<LogRow, ?> pos : cellsSnapshot) {
+                                if (pos.getRow() == firstRow && pos.getTableColumn() == col) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                allColumnsSelected = false;
+                                break;
+                            }
+                        }
+                        isFullRowSelection = allColumnsSelected;
+                    }
+                    
+                    if (isFullRowSelection) {
+                        // 行全体が選択されている場合 - タブ区切りで行全体をエクスポート
+                        List<Integer> processedRows = new ArrayList<>();
+                        int processedCount = 0;
+                        
+                        for (TablePosition<LogRow, ?> pos : cellsSnapshot) {
+                            if (isCancelled()) break;
+                            
+                            int row = pos.getRow();
+                            if (!processedRows.contains(row)) {
+                                processedRows.add(row);
+                                LogRow logRow = itemsSnapshot.get(row);
+                                for (int i = 0; i < logRow.fieldCount(); i++) {
+                                    if (i > 0) content.append("\t");
+                                    content.append(logRow.getField(i));
+                                }
+                                content.append(LINE_SEPARATOR);
+                                
+                                processedCount++;
+                                if (processedCount % 100 == 0) {
+                                    updateProgress(processedCount, cellsSnapshot.size() / columnsSnapshot.size());
+                                }
+                            }
+                        }
+                    } else {
+                        // 単一セルまたは部分選択の場合 - 選択セルをエクスポート
+                        int processedCount = 0;
+                        for (TablePosition<LogRow, ?> pos : cellsSnapshot) {
+                            if (isCancelled()) break;
+                            
+                            if (currentRow != -1 && currentRow != pos.getRow()) {
+                                content.append(LINE_SEPARATOR);
+                            }
+                            currentRow = pos.getRow();
+                            
+                            TableColumn<LogRow, ?> column = pos.getTableColumn();
+                            Object cellValue = column.getCellData(pos.getRow());
+                            
+                            if (cellValue != null) {
+                                content.append(cellValue.toString());
+                            }
+                            
+                            processedCount++;
+                            if (processedCount % 1000 == 0) {
+                                updateProgress(processedCount, cellsSnapshot.size());
+                            }
+                        }
+                        content.append(LINE_SEPARATOR);
+                    }
+
+                    if (!isCancelled()) {
+                        Files.writeString(outputPath, content.toString(), StandardCharsets.UTF_8);
+                    }
+                    
+                    return cellsSnapshot.size();
+                }
+            };
+
+            task.setOnSucceeded(evt -> {
+                int cellCount = task.getValue();
+                showAlert("成功", String.format("選択セル (%d セル) をエクスポートしました。", cellCount));
+            });
+
+            task.setOnFailed(evt -> {
+                Throwable ex = task.getException();
+                Alert alert = new Alert(Alert.AlertType.ERROR);
+                alert.setTitle("エラー");
+                alert.setHeaderText("エクスポートに失敗しました");
+                alert.setContentText(ex == null ? "不明なエラー" : ex.getMessage());
+                alert.showAndWait();
+            });
+
+            // プログレスダイアログを表示
+            showProgressDialog(task, "選択セルをエクスポート中...", stage);
+
+            Thread t = new Thread(task, "export-selection-thread");
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    /**
+     * タスクの進捗を表示するダイアログを表示します。
+     * @param task 実行中のタスク
+     * @param title ダイアログのタイトル
+     * @param owner 親ウィンドウ
+     */
+    private void showProgressDialog(Task<?> task, String title, Stage owner) {
+        ProgressBar progressBar = new ProgressBar();
+        progressBar.setPrefWidth(300);
+        progressBar.progressProperty().bind(task.progressProperty());
+
+        Label messageLabel = new Label("処理中...");
+        messageLabel.textProperty().bind(task.messageProperty());
+
+        VBox content = new VBox(10, messageLabel, progressBar);
+        content.setPadding(new Insets(20));
+        content.setAlignment(Pos.CENTER);
+
+        Stage progressStage = new Stage();
+        progressStage.setTitle(title);
+        progressStage.initOwner(owner);
+        progressStage.setScene(new Scene(content));
+        progressStage.setResizable(false);
+        progressStage.setOnCloseRequest(evt -> {
+            if (task.isRunning()) {
+                task.cancel();
+            }
+        });
+
+        // タスク完了時にダイアログを閉じる（既存ハンドラを保持するためaddEventHandlerを使用）
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_SUCCEEDED, evt -> progressStage.close());
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_FAILED, evt -> progressStage.close());
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_CANCELLED, evt -> progressStage.close());
+
+        progressStage.show();
     }
 
     /**
