@@ -251,7 +251,7 @@ public class Main extends Application {
                     String fileName = file.getName().toLowerCase(Locale.ROOT);
                     // TSV/TXTファイルのみを受け入れる
                     if (fileName.endsWith(".tsv") || fileName.endsWith(".txt")) {
-                        streamLoadFile(file.toPath());
+                        streamLoadFile(file.toPath(), stage);
                         success = true;
                     } else {
                         Alert alert = new Alert(Alert.AlertType.WARNING);
@@ -278,7 +278,7 @@ public class Main extends Application {
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV / Text files", "*.tsv", "*.txt", "*.*"));
         File f = chooser.showOpenDialog(stage);
         if (f != null) {
-            streamLoadFile(f.toPath());
+            streamLoadFile(f.toPath(), stage);
         }
     }
 
@@ -288,7 +288,7 @@ public class Main extends Application {
      * 行数がMAX_ROWSに達したら読み込みを打ち切り、完了後にカラムを再構築します。
      * @param path 読み込むファイルのパス
      */
-    private void streamLoadFile(Path path) {
+    private void streamLoadFile(Path path, Stage stage) {
         Task<?> previous = currentTask.getAndSet(null);
         // 以前のタスクがあればキャンセル
         if (previous != null) {
@@ -311,6 +311,8 @@ public class Main extends Application {
             protected LoadResult call() throws Exception {
                 int localColumnCount = 0;
                 boolean truncated = false;
+                updateProgress(0, MAX_ROWS);
+                updateMessage("0 行読み込み中...");
 
                 try (BufferedReader br = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                     String line;
@@ -328,6 +330,11 @@ public class Main extends Application {
                         buffer.add(new LogRow(parts, count + 1));
                         count++;
 
+                        if (count % 1_000 == 0) {
+                            updateProgress(count, MAX_ROWS);
+                            updateMessage(String.format("%,d 行読み込み中...", count));
+                        }
+
                         if (buffer.size() >= BATCH_SIZE) {
                             baseData.addAll(buffer);
                             buffer.clear();
@@ -337,6 +344,8 @@ public class Main extends Application {
                     if (!buffer.isEmpty()) {
                         baseData.addAll(buffer);
                     }
+                    updateProgress(count, MAX_ROWS);
+                    updateMessage(String.format("読み込み完了 処理中... (%,d 行)", count));
                 }
 
                 return new LoadResult(localColumnCount, truncated);
@@ -356,6 +365,9 @@ public class Main extends Application {
             table.setPlaceholder(new Label("TSVログファイルを開いてください (ファイル -> 開く...)"));
             updateStatus("ファイル読み込みに失敗しました");
         });
+
+        // 進捗ダイアログを表示
+        showProgressDialog(task, "ファイル読み込み中...", stage);
 
         Thread t = new Thread(task, "log-load-thread");
         t.setDaemon(true);
@@ -1173,10 +1185,10 @@ public class Main extends Application {
             }
         });
 
-        // タスク完了時にダイアログを閉じる
-        task.setOnSucceeded(evt -> progressStage.close());
-        task.setOnFailed(evt -> progressStage.close());
-        task.setOnCancelled(evt -> progressStage.close());
+        // タスク完了時にダイアログを閉じる（既存ハンドラを保持するためaddEventHandlerを使用）
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_SUCCEEDED, evt -> progressStage.close());
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_FAILED, evt -> progressStage.close());
+        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_CANCELLED, evt -> progressStage.close());
 
         progressStage.show();
     }
