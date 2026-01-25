@@ -452,6 +452,7 @@ public class Main extends Application {
         HBox.setHgrow(lineSpacer, Priority.ALWAYS);
         HBox lineHeaderBox = new HBox(4, lineHeaderLabel, lineSpacer, lineSortAscButton, lineSortDescButton);
         lineHeaderBox.setAlignment(Pos.CENTER_RIGHT);
+        lineCol.getProperties().put("columnName", lineCol.getText());
         lineCol.setText(null);
         lineCol.setGraphic(lineHeaderBox);
 
@@ -581,6 +582,7 @@ public class Main extends Application {
             HBox.setHgrow(spacer, Priority.ALWAYS);
             HBox headerBox = new HBox(4, headerLabel, spacer, sortAscButton, sortDescButton);
             headerBox.setAlignment(Pos.CENTER_RIGHT);
+            col.getProperties().put("columnName", col.getText());
             col.setText(null);
             col.setGraphic(headerBox);
             
@@ -711,7 +713,11 @@ public class Main extends Application {
                 continue;
             }
             
-            CheckBox checkBox = new CheckBox(column.getText());
+            String columnName = (String) column.getProperties().get("columnName");
+            if (columnName == null) {
+                columnName = "(名前なし)";
+            }
+            CheckBox checkBox = new CheckBox(columnName);
             checkBox.setSelected(column.isVisible());
             checkBox.selectedProperty().addListener((obs, oldVal, newVal) -> {
                 column.setVisible(newVal);
