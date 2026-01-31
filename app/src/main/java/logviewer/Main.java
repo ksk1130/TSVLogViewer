@@ -26,6 +26,8 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.scene.control.SplitPane;
+import javafx.scene.control.ScrollPane;
 
 import java.io.File;
 import java.io.BufferedReader;
@@ -66,6 +68,12 @@ public class Main extends Application {
     private boolean sortAscending = true;
     private long operationStartTime;
     private boolean skipFilterStatusUpdate = false;
+    
+    // 複数検索条件用
+    private VBox filterConditionListPane;
+    private List<FilterCondition> filterConditions = new ArrayList<>();
+    private VBox leftPanel;
+    private SplitPane centerPane;
 
     /**
      * アプリケーションのエントリポイント。メニュー、フィルタ入力、テーブルを構築し、
@@ -79,7 +87,10 @@ public class Main extends Application {
 
         MenuBar menuBar = getMenuBar(primaryStage);
 
-        // 上部コントロール: カラム選択 + フィルタ
+        // 左側パネル: 複数検索条件
+        leftPanel = createFilterConditionPanel();
+        
+        // 上部コントロール: カラム選択 + フィルタ (既存の単一検索として残す)
         columnSelector.getItems().add("All");
         columnSelector.getSelectionModel().selectFirst();
         columnSelector.setPrefWidth(150);
@@ -89,9 +100,19 @@ public class Main extends Application {
 
         Button clearBtn = new Button("Clear");
         clearBtn.setOnAction(e -> filterField.clear());
+        
+        // 検索条件パネルの開閉ボタン
+        Button toggleFilterPanelBtn = new Button("≡ 複数条件検索");
+        toggleFilterPanelBtn.setStyle("-fx-font-weight: bold;");
+        toggleFilterPanelBtn.setOnAction(e -> toggleFilterPanel());
 
-        HBox topBox = new HBox(8, new Label("Column:"), columnSelector, new Label("Filter:"), filterField, clearBtn);
+        Label singleConditionLabel = new Label("単一条件検索　");
+        singleConditionLabel.setStyle("-fx-font-weight: bold;");
+
+        HBox topBox = new HBox(8, toggleFilterPanelBtn, new Separator(javafx.geometry.Orientation.VERTICAL), 
+                      singleConditionLabel, new Label("Column:"), columnSelector, new Label("Filter:"), filterField, clearBtn);
         topBox.setPadding(new Insets(8));
+        topBox.setAlignment(Pos.CENTER_LEFT);
 
         // テーブル設定
         table.setPlaceholder(new Label("ログファイルを開いてください (ファイル -> Openまたは、ログファイルをドラッグ＆ドロップ)"));
@@ -155,8 +176,12 @@ public class Main extends Application {
         // ドラッグ＆ドロップの設定
         setupDragAndDrop(table, primaryStage);
 
+        // 中央部分: 左パネル + テーブルをSplitPaneで配置
+        centerPane = new SplitPane();
+        centerPane.getItems().add(table); // 初期状態はテーブルのみ
+        
         root.setTop(new VBox(menuBar, topBox));
-        root.setCenter(table);
+        root.setCenter(centerPane);
 
         // ステータスバー
         statusLabel = new Label("準備完了");
@@ -420,6 +445,9 @@ public class Main extends Application {
         }
         columnSelector.getItems().setAll(cols);
         columnSelector.getSelectionModel().selectFirst();
+        
+        // 既存の検索条件のカラムセレクタも更新
+        updateFilterConditionColumns(cols);
 
         table.setPlaceholder(new Label("No rows"));
 
@@ -678,7 +706,14 @@ public class Main extends Application {
         Task<List<LogRow>> task = new Task<>() {
             @Override
             protected List<LogRow> call() {
-                Predicate<LogRow> predicate = buildPredicate(filterText, selectedColumn);
+                // 複数条件が存在する場合は複数条件を優先
+                Predicate<LogRow> predicate;
+                if (!filterConditions.isEmpty()) {
+                    predicate = buildMultiplePredicate();
+                } else {
+                    predicate = buildPredicate(filterText, selectedColumn);
+                }
+                
                 Comparator<LogRow> comparator = buildComparator(targetSortIndex, ascending);
 
                 List<LogRow> result = new ArrayList<>();
@@ -839,6 +874,106 @@ public class Main extends Application {
                 };
             } else {
                 int idx = columnSelector.getSelectionModel().getSelectedIndex() - 1;
+                return r -> {
+                    if (idx < 0 || idx >= r.fieldCount())
+                        return false;
+                    return r.getField(idx).toLowerCase(Locale.ROOT).contains(q);
+                };
+            }
+        }
+    }
+    
+    /**
+     * 複数の検索条件を組み合わせたPredicateを構築します。
+     * すべての条件にマッチする行のみを通過させます（AND条件）。
+     * 
+     * @return 複数条件を組み合わせたPredicate
+     */
+    private Predicate<LogRow> buildMultiplePredicate() {
+        List<Predicate<LogRow>> predicates = new ArrayList<>();
+        
+        for (FilterCondition condition : filterConditions) {
+            String text = condition.filterField.getText();
+            String selected = condition.columnSelector.getValue();
+            
+            if (text == null || text.isBlank()) {
+                continue; // 空の条件はスキップ
+            }
+            
+            // 各条件に対してPredicateを作成
+            Predicate<LogRow> p = buildSingleConditionPredicate(text, selected, condition.columnSelector);
+            predicates.add(p);
+        }
+        
+        // すべての条件を満たす必要がある（AND結合）
+        if (predicates.isEmpty()) {
+            return r -> true;
+        }
+        
+        return r -> {
+            for (Predicate<LogRow> p : predicates) {
+                if (!p.test(r)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+    }
+    
+    /**
+     * 単一の検索条件からPredicateを構築します。
+     * 
+     * @param text テキスト条件
+     * @param selected 選択されたカラム名
+     * @param combo カラム選択用のComboBox
+     * @return 単一条件のPredicate
+     */
+    private Predicate<LogRow> buildSingleConditionPredicate(String text, String selected, ComboBox<String> combo) {
+        if (selected == null) {
+            selected = "All";
+        }
+        
+        String trimmed = text.trim();
+        boolean isRegex = trimmed.length() >= 2 && trimmed.startsWith("/") && trimmed.endsWith("/");
+
+        if (isRegex) {
+            String patternText = trimmed.substring(1, trimmed.length() - 1);
+            Pattern pattern;
+            try {
+                pattern = Pattern.compile(patternText);
+            } catch (PatternSyntaxException e) {
+                return r -> true; // 無効な正規表現は素通り扱い
+            }
+
+            if ("All".equals(selected)) {
+                return r -> {
+                    for (int i = 0; i < r.fieldCount(); i++) {
+                        if (pattern.matcher(r.getField(i)).matches())
+                            return true;
+                    }
+                    return false;
+                };
+            } else {
+                int idx = combo.getSelectionModel().getSelectedIndex() - 1;
+                return r -> {
+                    if (idx < 0 || idx >= r.fieldCount())
+                        return false;
+                    return pattern.matcher(r.getField(idx)).matches();
+                };
+            }
+        } else {
+            String q = trimmed.toLowerCase(Locale.ROOT);
+            if ("All".equals(selected)) {
+                return r -> {
+                    for (int i = 0; i < r.fieldCount(); i++) {
+                        String v = r.getField(i);
+                        if (v.toLowerCase(Locale.ROOT).contains(q))
+                            return true;
+                    }
+                    return false;
+                };
+            } else {
+                int idx = combo.getSelectionModel().getSelectedIndex() - 1;
                 return r -> {
                     if (idx < 0 || idx >= r.fieldCount())
                         return false;
@@ -1231,6 +1366,151 @@ public class Main extends Application {
     }
 
     /**
+     * 検索条件パネルの表示/非表示を切り替えます。
+     */
+    private void toggleFilterPanel() {
+        if (centerPane.getItems().contains(leftPanel)) {
+            // パネルを閉じる
+            centerPane.getItems().remove(leftPanel);
+        } else {
+            // パネルを開く
+            centerPane.getItems().add(0, leftPanel);
+            Platform.runLater(() -> centerPane.setDividerPositions(0.20));
+        }
+    }
+    
+    /**
+     * 複数検索条件パネルを作成します。
+     * 
+     * @return 検索条件パネル
+     */
+    private VBox createFilterConditionPanel() {
+        VBox panel = new VBox(10);
+        panel.setPadding(new Insets(10));
+        panel.setStyle("-fx-background-color: #f5f5f5; -fx-border-color: #cccccc; -fx-border-width: 0 1 0 0;");
+        
+        Label titleLabel = new Label("検索条件");
+        titleLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
+        
+        // 検索条件リスト表示用のVBox
+        filterConditionListPane = new VBox(5);
+        filterConditionListPane.setPadding(new Insets(5, 0, 5, 0));
+        
+        // スクロールペイン
+        ScrollPane scrollPane = new ScrollPane(filterConditionListPane);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setStyle("-fx-background-color: transparent;");
+        VBox.setVgrow(scrollPane, Priority.ALWAYS);
+        
+        // ボタンエリア
+        Button addButton = new Button("＋ 条件を追加");
+        addButton.setMaxWidth(Double.MAX_VALUE);
+        addButton.setOnAction(e -> addFilterCondition());
+        
+        Button applyButton = new Button("適用");
+        applyButton.setMaxWidth(Double.MAX_VALUE);
+        applyButton.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white;");
+        applyButton.setOnAction(e -> applyMultipleFilters());
+        
+        Button clearAllButton = new Button("すべてクリア");
+        clearAllButton.setMaxWidth(Double.MAX_VALUE);
+        clearAllButton.setOnAction(e -> clearAllFilters());
+        
+        VBox buttonBox = new VBox(5, addButton, applyButton, clearAllButton);
+        
+        panel.getChildren().addAll(titleLabel, new Separator(), scrollPane, buttonBox);
+        panel.setPrefWidth(300);
+        panel.setMinWidth(200);
+        
+        return panel;
+    }
+    
+    /**
+     * 検索条件を追加します。
+     */
+    private void addFilterCondition() {
+        FilterCondition condition = new FilterCondition();
+        filterConditions.add(condition);
+        
+        HBox conditionPane = new HBox(5);
+        conditionPane.setPadding(new Insets(5));
+        conditionPane.setStyle("-fx-background-color: white; -fx-border-color: #cccccc; -fx-border-width: 1; -fx-border-radius: 3;");
+        
+        VBox contentBox = new VBox(5);
+        
+        // カラム選択
+        ComboBox<String> columnCombo = new ComboBox<>();
+        columnCombo.getItems().add("All");
+        columnCombo.getItems().addAll(columnSelector.getItems().stream()
+            .filter(s -> !s.equals("All"))
+            .toList());
+        columnCombo.getSelectionModel().selectFirst();
+        columnCombo.setMaxWidth(Double.MAX_VALUE);
+        condition.columnSelector = columnCombo;
+        
+        // 検索テキスト
+        TextField filterText = new TextField();
+        filterText.setPromptText("検索文字列");
+        filterText.setMaxWidth(Double.MAX_VALUE);
+        condition.filterField = filterText;
+        
+        contentBox.getChildren().addAll(
+            new Label("カラム:"),
+            columnCombo,
+            new Label("条件:"),
+            filterText
+        );
+        
+        // 削除ボタン
+        Button removeButton = new Button("ー");
+        removeButton.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
+        removeButton.setOnAction(e -> {
+            filterConditions.remove(condition);
+            filterConditionListPane.getChildren().remove(conditionPane);
+        });
+        
+        HBox.setHgrow(contentBox, Priority.ALWAYS);
+        conditionPane.getChildren().addAll(contentBox, removeButton);
+        
+        filterConditionListPane.getChildren().add(conditionPane);
+    }
+    
+    /**
+     * 既存の検索条件のカラムセレクタを更新します。
+     * 
+     * @param columns カラム名のリスト
+     */
+    private void updateFilterConditionColumns(List<String> columns) {
+        for (FilterCondition condition : filterConditions) {
+            String currentSelection = condition.columnSelector.getValue();
+            condition.columnSelector.getItems().setAll(columns);
+            
+            // 以前の選択を復元（存在する場合）
+            if (columns.contains(currentSelection)) {
+                condition.columnSelector.setValue(currentSelection);
+            } else {
+                condition.columnSelector.getSelectionModel().selectFirst();
+            }
+        }
+    }
+    
+    /**
+     * 複数の検索条件を適用します。
+     */
+    private void applyMultipleFilters() {
+        refreshAsync();
+    }
+    
+    /**
+     * すべての検索条件をクリアします。
+     */
+    private void clearAllFilters() {
+        filterConditions.clear();
+        filterConditionListPane.getChildren().clear();
+        refreshAsync();
+    }
+
+    /**
      * アラートダイアログを表示します。
      * 
      * @param title   ダイアログのタイトル
@@ -1242,6 +1522,14 @@ public class Main extends Application {
         alert.setHeaderText(null);
         alert.setContentText(message);
         alert.showAndWait();
+    }
+    
+    /**
+     * 検索条件を保持するクラス
+     */
+    private static class FilterCondition {
+        ComboBox<String> columnSelector;
+        TextField filterField;
     }
 
     /**
