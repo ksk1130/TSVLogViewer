@@ -6,19 +6,14 @@ import javafx.concurrent.Task;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.ReadOnlyIntegerWrapper;
 import javafx.beans.property.SimpleStringProperty;
-import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.input.Clipboard;
-import javafx.scene.input.ClipboardContent;
-import javafx.scene.input.Dragboard;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
-import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -29,10 +24,21 @@ import javafx.stage.Stage;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.ScrollPane;
 
+import logviewer.controller.MainController;
+import logviewer.model.LogViewerModel;
+import logviewer.service.ClipboardService;
+import logviewer.service.FileIOService;
+import logviewer.service.FilterService;
+import logviewer.service.FilterSortService;
+import logviewer.service.NavigationService;
+import logviewer.service.SortService;
+import logviewer.service.FileLoadResult;
+import logviewer.ui.DragAndDropHandler;
+import logviewer.ui.FilterConditionPanel;
+
+import logviewer.ui.ProgressDialogService;
+
 import java.io.File;
-import java.io.BufferedReader;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -40,8 +46,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * TSV形式のログファイルを効率的に閲覧するためのJavaFXアプリケーション。
@@ -50,29 +54,32 @@ import java.util.regex.PatternSyntaxException;
 public class Main extends Application {
     // 定数: 最大行数
     private static final int MAX_ROWS = 20_000_000;
-    // 定数: バッチサイズ
-    private static final int BATCH_SIZE = 5_000;
-
     private static final String LINE_SEPARATOR = "\r\n";
 
-    private final List<LogRow> baseData = new ArrayList<>();
-    private final ObservableList<LogRow> tableData = FXCollections.observableArrayList();
+    // ===== モデル =====
+    private final LogViewerModel model = new LogViewerModel();
+    
+    // ===== サービス =====
+    private final FileIOService fileIOService = new FileIOService();
+    private final FilterService filterService = new FilterService();
+    private final SortService sortService = new SortService();
+    private final FilterSortService filterSortService = new FilterSortService();
+    private final ClipboardService clipboardService = new ClipboardService();
+    private final NavigationService navigationService = new NavigationService();
+    private final DragAndDropHandler dragAndDropHandler = new DragAndDropHandler(fileIOService);
+    private final ProgressDialogService progressDialogService = new ProgressDialogService();
+    private final MainController controller = new MainController(model, fileIOService, filterService);
+    
+    // ===== UI コンポーネント =====
     private final TableView<LogRow> table = new TableView<>();
     private final AtomicReference<Task<?>> currentTask = new AtomicReference<>();
     private ComboBox<String> columnSelector = new ComboBox<>();
     private TextField filterField = new TextField();
-    private List<Integer> visibleColumnIndices = new ArrayList<>();
     private TableColumn<LogRow, ?> lineNumberColumn;
     private Label statusLabel;
-    private int sortColumnIndex = -1; // -1 は行番号を意味する
-    private boolean sortAscending = true;
-    private long operationStartTime;
-    private boolean skipFilterStatusUpdate = false;
     
-    // 複数検索条件用
-    private VBox filterConditionListPane;
-    private List<FilterCondition> filterConditions = new ArrayList<>();
-    private VBox leftPanel;
+    // ===== 複数検索条件用 =====
+    private FilterConditionPanel filterConditionPanel;
     private SplitPane centerPane;
 
     /**
@@ -88,7 +95,7 @@ public class Main extends Application {
         MenuBar menuBar = getMenuBar(primaryStage);
 
         // 左側パネル: 複数検索条件
-        leftPanel = createFilterConditionPanel();
+        filterConditionPanel = createFilterConditionPanel();
         
         // 上部コントロール: カラム選択 + フィルタ (既存の単一検索として残す)
         columnSelector.getItems().add("All");
@@ -141,19 +148,19 @@ public class Main extends Application {
         });
 
         // データバインディング
-        table.setItems(tableData);
+        table.setItems(model.getTableData());
         table.setSortPolicy(tv -> {
             if (tv.getSortOrder().isEmpty()) {
-                sortColumnIndex = -1;
-                sortAscending = true;
+                model.setSortConfig(-1, true);
             } else {
                 TableColumn<LogRow, ?> sortCol = tv.getSortOrder().get(0);
-                sortAscending = sortCol.getSortType() != TableColumn.SortType.DESCENDING;
+                boolean ascending = sortCol.getSortType() != TableColumn.SortType.DESCENDING;
                 if (sortCol == lineNumberColumn) {
-                    sortColumnIndex = -1;
+                    model.setSortConfig(-1, ascending);
                 } else {
                     Object ud = sortCol.getUserData();
-                    sortColumnIndex = (ud instanceof Integer) ? (Integer) ud : -1;
+                    int columnIndex = (ud instanceof Integer) ? (Integer) ud : -1;
+                    model.setSortConfig(columnIndex, ascending);
                 }
             }
             refreshAsync();
@@ -161,8 +168,14 @@ public class Main extends Application {
         });
 
         // フィルタ/ソートの変更時に更新
-        filterField.textProperty().addListener((obs, oldVal, newVal) -> refreshAsync());
-        columnSelector.valueProperty().addListener((obs, oldVal, newVal) -> refreshAsync());
+        filterField.textProperty().addListener((obs, oldVal, newVal) -> {
+            model.setSingleFilter(newVal, columnSelector.getValue());
+            refreshAsync();
+        });
+        columnSelector.valueProperty().addListener((obs, oldVal, newVal) -> {
+            model.setSingleFilter(filterField.getText(), newVal);
+            refreshAsync();
+        });
 
         // Ctrl+C コピー処理を設定
         table.setOnKeyPressed(event -> {
@@ -174,7 +187,17 @@ public class Main extends Application {
         });
 
         // ドラッグ＆ドロップの設定
-        setupDragAndDrop(table, primaryStage);
+        dragAndDropHandler.attach(table, primaryStage, path -> {
+            Task<FileLoadResult> task = controller.handleLoadFile(
+                path,
+                this::prepareForFileLoad,
+                this::onFileLoaded,
+                this::onFileLoadFailed
+            );
+            if (task != null) {
+                progressDialogService.show(task, "ファイル読み込み中...", primaryStage);
+            }
+        });
 
         // 中央部分: 左パネル + テーブルをSplitPaneで配置
         centerPane = new SplitPane();
@@ -184,7 +207,8 @@ public class Main extends Application {
         root.setCenter(centerPane);
 
         // ステータスバー
-        statusLabel = new Label("準備完了");
+        statusLabel = new Label(model.getStatusMessage());
+        statusLabel.textProperty().bind(model.statusMessageProperty());
         HBox statusBar = new HBox(10, statusLabel);
         statusBar.setPadding(new Insets(5, 10, 5, 10));
         statusBar.setStyle("-fx-border-color: #cccccc; -fx-border-width: 1 0 0 0;");
@@ -202,17 +226,34 @@ public class Main extends Application {
      * @param primaryStage メインステージ
      * @return 構築されたメニューバー
      */
+    /**
+     * メニューバーを構築します。
+     * ファイル開く、エクスポート、カラム表示/非表示、行移動、編集メニューを含みます。
+     * 
+     * @param primaryStage メインステージ
+     * @return メニューバー
+     */
     private MenuBar getMenuBar(Stage primaryStage) {
         // ファイルを開くメニュー
         MenuBar menuBar = new MenuBar();
         Menu fileMenu = new Menu("ファイル(_F)");
         MenuItem openItem = new MenuItem("開く...");
         openItem.setAccelerator(new KeyCodeCombination(KeyCode.O, KeyCombination.CONTROL_DOWN));
-        openItem.setOnAction(e -> openFile(primaryStage));
+        openItem.setOnAction(e -> {
+            Task<FileLoadResult> task = controller.handleOpenFile(
+                primaryStage,
+                this::prepareForFileLoad,
+                this::onFileLoaded,
+                this::onFileLoadFailed
+            );
+            if (task != null) {
+                progressDialogService.show(task, "ファイル読み込み中...", primaryStage);
+            }
+        });
 
         MenuItem exportDisplayedItem = new MenuItem("表示中のデータをエクスポート...");
         exportDisplayedItem.setOnAction(e -> exportDisplayedData(primaryStage));
-        exportDisplayedItem.disableProperty().bind(Bindings.isEmpty(tableData));
+        exportDisplayedItem.disableProperty().bind(Bindings.isEmpty(model.getTableData()));
 
         MenuItem exportSelectedRowsItem = new MenuItem("選択行をエクスポート...");
         exportSelectedRowsItem.setAccelerator(
@@ -250,173 +291,59 @@ public class Main extends Application {
     }
 
     /**
-     * テーブルにドラッグ＆ドロップ機能を設定します。
-     * TSV/TXTファイルがドロップされた際に自動的に開きます。
-     * 
-     * @param table ドラッグ＆ドロップを有効にするテーブル
-     * @param stage 親ステージ
+     * ファイル読み込み開始時のUI初期化を行います。
      */
-    private void setupDragAndDrop(TableView<LogRow> table, Stage stage) {
-        // ドラッグオーバー時の処理
-        table.setOnDragOver(event -> {
-            Dragboard db = event.getDragboard();
-            if (db.hasFiles()) {
-                // ファイルがドラッグされている場合、コピーモードを受け入れる
-                event.acceptTransferModes(TransferMode.COPY);
-            }
-            event.consume();
-        });
-
-        // ドラッグエンター時の処理（視覚的フィードバック）
-        table.setOnDragEntered(event -> {
-            if (event.getDragboard().hasFiles()) {
-                table.setOpacity(0.7);
-            }
-            event.consume();
-        });
-
-        // ドラッグ退出時の処理
-        table.setOnDragExited(event -> {
-            table.setOpacity(1.0);
-            event.consume();
-        });
-
-        // ドロップ時の処理
-        table.setOnDragDropped(event -> {
-            Dragboard db = event.getDragboard();
-            boolean success = false;
-            if (db.hasFiles()) {
-                List<File> files = db.getFiles();
-                if (!files.isEmpty()) {
-                    File file = files.get(0); // 最初のファイルを開く
-                    String fileName = file.getName().toLowerCase(Locale.ROOT);
-                    // TSV/TXTファイルのみを受け入れる
-                    if (fileName.endsWith(".tsv") || fileName.endsWith(".txt")) {
-                        streamLoadFile(file.toPath(), stage);
-                        success = true;
-                    } else {
-                        Alert alert = new Alert(Alert.AlertType.WARNING);
-                        alert.setTitle("サポートされていないファイル形式");
-                        alert.setHeaderText(null);
-                        alert.setContentText("TSV または TXT ファイルのみをドロップできます。");
-                        alert.showAndWait();
-                    }
-                }
-            }
-            table.setOpacity(1.0);
-            event.setDropCompleted(success);
-            event.consume();
-        });
-    }
-
     /**
-     * ファイル選択ダイアログを開き、選択されたTSV/TXTファイルの読み込みを開始します。
-     * 
-     * @param stage ダイアログを表示するステージ
+     * ファイル読み込み前の準備処理を実行します。
+     * テーブルをクリアしメッセージを表示します。
      */
-    private void openFile(Stage stage) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("ログファイルを開く");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV / Text files", "*.tsv", "*.txt", "*.*"));
-        File f = chooser.showOpenDialog(stage);
-        if (f != null) {
-            streamLoadFile(f.toPath(), stage);
-        }
-    }
-
-    /**
-     * 選択されたファイルをバックグラウンドでストリーミング読み込みし、ベースデータに蓄積します。
-     * 既存のフィルタ/ソート計算タスクはキャンセルし、UIを初期化してから読み込みを開始します。
-     * 行数がMAX_ROWSに達したら読み込みを打ち切り、完了後にカラムを再構築します。
-     * 
-     * @param path 読み込むファイルのパス
-     */
-    private void streamLoadFile(Path path, Stage stage) {
-        Task<?> previous = currentTask.getAndSet(null);
-        // 以前のタスクがあればキャンセル
-        if (previous != null) {
-            previous.cancel();
-        }
-
-        // FXスレッド上でUI状態を初期化
-        baseData.clear();
-        tableData.clear();
+    private void prepareForFileLoad() {
+        model.clearAllData();
         table.getColumns().clear();
         columnSelector.getItems().setAll("All");
         columnSelector.getSelectionModel().selectFirst();
         table.setPlaceholder(new Label("Loading..."));
-        updateStatus("ファイルを読み込み中...");
-        operationStartTime = System.nanoTime();
+        model.setStatusMessage("ファイルを読み込み中...");
+        model.setOperationStartTime(System.nanoTime());
+    }
 
-        // 非同期でファイル読み込み
-        Task<LoadResult> task = new Task<>() {
-            @Override
-            protected LoadResult call() throws Exception {
-                int localColumnCount = 0;
-                boolean truncated = false;
-                updateProgress(0, MAX_ROWS);
-                updateMessage("0 行読み込み中...");
+    /**
+     * ファイル読み込み成功時の処理を行います。
+     * 
+     * @param result 読み込み結果
+     */
+    /**
+     * ファイル読み込み完了時の処理を実行します。
+     * テーブルにデータを反映します。
+     * 
+     * @param result ファイル読み込み結果
+     */
+    private void onFileLoaded(FileLoadResult result) {
+        if (result == null) {
+            return;
+        }
+        model.addBaseDataRows(result.rows);
+        finalizeLoad(result.columns, result.truncated);
+    }
 
-                try (BufferedReader br = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-                    String line;
-                    int count = 0;
-                    List<LogRow> buffer = new ArrayList<>(BATCH_SIZE);
-
-                    while ((line = br.readLine()) != null) {
-                        if (count >= MAX_ROWS) {
-                            truncated = true;
-                            break;
-                        }
-
-                        String[] parts = line.split("\t", -1);
-                        if (parts.length > localColumnCount)
-                            localColumnCount = parts.length;
-                        buffer.add(new LogRow(parts, count + 1));
-                        count++;
-
-                        if (count % 1_000 == 0) {
-                            updateProgress(count, MAX_ROWS);
-                            updateMessage(String.format("%,d 行読み込み中...", count));
-                        }
-
-                        if (buffer.size() >= BATCH_SIZE) {
-                            baseData.addAll(buffer);
-                            buffer.clear();
-                        }
-                    }
-
-                    if (!buffer.isEmpty()) {
-                        baseData.addAll(buffer);
-                    }
-                    updateProgress(count, MAX_ROWS);
-                    updateMessage(String.format("読み込み完了 処理中... (%,d 行)", count));
-                }
-
-                return new LoadResult(localColumnCount, truncated);
-            }
-        };
-
-        // 読み込み成功時はTaskのハンドラでUI更新（JavaFXスレッド上で実行される）
-        task.setOnSucceeded(ev -> {
-            LoadResult res = task.getValue();
-            finalizeLoad(res.columns, res.truncated);
-        });
-
-        task.setOnFailed(e -> {
-            Throwable ex = task.getException();
-            Alert a = new Alert(Alert.AlertType.ERROR, "ファイルの読み込みに失敗しました: " + (ex == null ? "不明なエラー" : ex.getMessage()),
-                    ButtonType.OK);
-            a.showAndWait();
-            table.setPlaceholder(new Label("TSVログファイルを開いてください (ファイル -> 開く...)"));
-            updateStatus("ファイル読み込みに失敗しました");
-        });
-
-        // 進捗ダイアログを表示
-        showProgressDialog(task, "ファイル読み込み中...", stage);
-
-        Thread t = new Thread(task, "log-load-thread");
-        t.setDaemon(true);
-        t.start();
+    /**
+     * ファイル読み込み失敗時の処理を行います。
+     * 
+     * @param ex 例外
+     */
+    /**
+     * ファイル読み込み失敗時の処理を実行します。
+     * エラー情報を表示します。
+     * 
+     * @param ex 例外
+     */
+    private void onFileLoadFailed(Throwable ex) {
+        Alert a = new Alert(Alert.AlertType.ERROR,
+                "ファイルの読み込みに失敗しました: " + (ex == null ? "不明なエラー" : ex.getMessage()),
+                ButtonType.OK);
+        a.showAndWait();
+        table.setPlaceholder(new Label("TSVログファイルを開いてください (ファイル -> 開く...)"));
+        model.setStatusMessage("ファイル読み込みに失敗しました");
     }
 
     /**
@@ -426,16 +353,24 @@ public class Main extends Application {
      * @param columns   検出された列数
      * @param truncated 行数上限で打ち切られた場合は true
      */
+    /**
+     * ファイル読み込み完了後の最終処理を実行します。
+     * カラムの再構築やフィルタのリセット、ステータス表示などを行います。
+     * 
+     * @param columns   カラム数
+     * @param truncated ファイルが切り詰められたかどうか
+     */
     private void finalizeLoad(int columns, boolean truncated) {
         // columnSelectorの設定でリスナーが発火してrefreshAsyncが呼ばれる可能性があるため、
         // 最初にフラグを設定してoperationStartTimeが上書きされないようにする
-        skipFilterStatusUpdate = true;
+        model.setSkipFilterStatusUpdate(true);
 
         if (columns == 0) {
             table.setPlaceholder(new Label("No data"));
             return;
         }
 
+        model.setColumnCount(columns);
         rebuildColumns(columns);
 
         List<String> cols = new ArrayList<>();
@@ -447,16 +382,16 @@ public class Main extends Application {
         columnSelector.getSelectionModel().selectFirst();
         
         // 既存の検索条件のカラムセレクタも更新
-        updateFilterConditionColumns(cols);
+        filterConditionPanel.updateColumns(cols);
 
         table.setPlaceholder(new Label("No rows"));
 
-        long elapsedMillis = (System.nanoTime() - operationStartTime) / 1_000_000;
+        long elapsedMillis = (System.nanoTime() - model.getOperationStartTime()) / 1_000_000;
         double elapsedSeconds = elapsedMillis / 1000.0;
-        updateStatus(String.format("ファイル読み込みが完了しました。読み込み行数 %,d 行、処理時間 %.2f 秒", baseData.size(), elapsedSeconds));
+        model.setStatusMessage(String.format("ファイル読み込みが完了しました。読み込み行数 %,d 行、処理時間 %.2f 秒", model.getBaseData().size(), elapsedSeconds));
 
         // 読み込んだデータをテーブルに直接設定（初期状態は行番号順なのでソート不要）
-        tableData.setAll(baseData);
+        model.setTableData(new ArrayList<>(model.getBaseData()));
 
         if (truncated) {
             String message = String.format("メモリ使用量を抑えるため、ファイルは %,d 行で打ち切られました。", MAX_ROWS);
@@ -471,203 +406,22 @@ public class Main extends Application {
      * 
      * @param columns 生成するデータ列数
      */
+    /**
+     * テーブルのカラムを動的に再構築します。
+     * 指定されたカラム数に応じてカラムを追加します。
+     * 
+     * @param columns カラム数
+     */
     private void rebuildColumns(int columns) {
         table.getColumns().clear();
+        
+        // 行番号カラムを生成・追加
+        lineNumberColumn = createLineNumberColumn();
+        table.getColumns().add(lineNumberColumn);
 
-        // 行番号カラム（データモデルには含まれない）
-        TableColumn<LogRow, Number> lineCol = new TableColumn<>("Line");
-        lineCol.setReorderable(false);
-        lineCol.setPrefWidth(81);
-        lineCol.setCellValueFactory(cd -> new ReadOnlyIntegerWrapper(cd.getValue().getLineNumber()));
-        lineCol.setSortable(false); // ボタン操作でのみソート
-
-        Label lineHeaderLabel = new Label(lineCol.getText());
-        Button lineSortAscButton = new Button("▲");
-        Button lineSortDescButton = new Button("▼");
-        lineSortAscButton.setFocusTraversable(false);
-        lineSortDescButton.setFocusTraversable(false);
-        lineSortAscButton.setPadding(new Insets(0, 4, 0, 4));
-        lineSortDescButton.setPadding(new Insets(0, 4, 0, 4));
-        lineSortAscButton.setOnAction(e -> {
-            table.getSortOrder().setAll(lineCol);
-            lineCol.setSortType(TableColumn.SortType.ASCENDING);
-            table.sort();
-        });
-        lineSortDescButton.setOnAction(e -> {
-            table.getSortOrder().setAll(lineCol);
-            lineCol.setSortType(TableColumn.SortType.DESCENDING);
-            table.sort();
-        });
-        Region lineSpacer = new Region();
-        HBox.setHgrow(lineSpacer, Priority.ALWAYS);
-        HBox lineHeaderBox = new HBox(4, lineHeaderLabel, lineSpacer, lineSortAscButton, lineSortDescButton);
-        lineHeaderBox.setAlignment(Pos.CENTER_RIGHT);
-        lineCol.getProperties().put("columnName", lineCol.getText());
-        lineCol.setText(null);
-        lineCol.setGraphic(lineHeaderBox);
-
-        // 行番号カラムのセルファクトリ: 右寄せ表示 + 複数行選択対応
-        lineCol.setCellFactory(col -> new TableCell<>() {
-            {
-                setStyle("-fx-alignment: CENTER-RIGHT;");
-                addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, evt -> {
-                    if (!isEmpty() && getTableRow() != null) {
-                        int rowIndex = getIndex();
-                        if (rowIndex >= 0 && rowIndex < table.getItems().size()) {
-                            // イベントの状態を事前にキャプチャ
-                            boolean ctrlDown = evt.isControlDown();
-                            boolean shiftDown = evt.isShiftDown();
-                            int currentFocusedRow = table.getFocusModel().getFocusedIndex();
-
-                            TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
-                            List<TableColumn<LogRow, ?>> columns = table.getColumns();
-
-                            if (columns.isEmpty())
-                                return;
-
-                            // Ctrlキー押下時: トグル選択
-                            if (ctrlDown) {
-                                // 現在の選択を保存
-                                @SuppressWarnings("unchecked")
-                                ObservableList<TablePosition<LogRow, ?>> selectedCells = (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) sm
-                                        .getSelectedCells();
-                                List<TablePosition<LogRow, ?>> savedSelection = new ArrayList<>(selectedCells);
-
-                                // この行が選択されているかチェック
-                                boolean alreadySelected = savedSelection.stream()
-                                        .anyMatch(pos -> pos.getRow() == rowIndex);
-
-                                sm.clearSelection();
-
-                                if (alreadySelected) {
-                                    // 選択解除: この行以外を再選択
-                                    for (TablePosition<LogRow, ?> pos : savedSelection) {
-                                        if (pos.getRow() != rowIndex) {
-                                            sm.select(pos.getRow(), pos.getTableColumn());
-                                        }
-                                    }
-                                } else {
-                                    // 既存の選択を再適用
-                                    for (TablePosition<LogRow, ?> pos : savedSelection) {
-                                        sm.select(pos.getRow(), pos.getTableColumn());
-                                    }
-                                    // この行の全セルを追加
-                                    for (TableColumn<LogRow, ?> column : columns) {
-                                        sm.select(rowIndex, column);
-                                    }
-                                }
-                                table.getFocusModel().focus(rowIndex, lineCol);
-                                evt.consume();
-                            }
-                            // Shiftキー押下時: 範囲選択
-                            else if (shiftDown) {
-                                if (currentFocusedRow >= 0 && currentFocusedRow < table.getItems().size()) {
-                                    int startRow = Math.min(currentFocusedRow, rowIndex);
-                                    int endRow = Math.max(currentFocusedRow, rowIndex);
-
-                                    sm.clearSelection();
-                                    for (int r = startRow; r <= endRow; r++) {
-                                        for (TableColumn<LogRow, ?> column : columns) {
-                                            sm.select(r, column);
-                                        }
-                                    }
-                                } else {
-                                    sm.clearSelection();
-                                    for (TableColumn<LogRow, ?> column : columns) {
-                                        sm.select(rowIndex, column);
-                                    }
-                                }
-                                table.getFocusModel().focus(rowIndex, lineCol);
-                                evt.consume();
-                            }
-                            // 修飾キーなし: 通常の単一行選択
-                            else {
-                                sm.clearSelection();
-                                for (TableColumn<LogRow, ?> column : columns) {
-                                    sm.select(rowIndex, column);
-                                }
-                                table.getFocusModel().focus(rowIndex, lineCol);
-                                evt.consume();
-                            }
-                        }
-                    }
-                });
-            }
-
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty ? null : String.format(Locale.US, "%,d", item.intValue()));
-            }
-        });
-        table.getColumns().add(lineCol);
-        lineNumberColumn = lineCol;
-
-        // データカラム
+        // データカラムを生成・追加
         for (int i = 0; i < columns; i++) {
-            final int colIndex = i;
-            TableColumn<LogRow, String> col = new TableColumn<>("Col " + i);
-            col.setCellValueFactory(cellData -> new SimpleStringProperty(cellData.getValue().getField(colIndex)));
-            col.setPrefWidth(150);
-            col.setComparator((a, b) -> a.compareToIgnoreCase(b));
-            col.setUserData(colIndex); // カスタムソート用にインデックスを保持
-            col.setSortable(false); // ヘッダ全体のクリックでソートさせず、ボタン操作に限定
-
-            Label headerLabel = new Label(col.getText());
-            Button sortAscButton = new Button("▲");
-            Button sortDescButton = new Button("▼");
-            sortAscButton.setFocusTraversable(false);
-            sortDescButton.setFocusTraversable(false);
-            sortAscButton.setPadding(new Insets(0, 4, 0, 4));
-            sortDescButton.setPadding(new Insets(0, 4, 0, 4));
-            sortAscButton.setOnAction(e -> {
-                table.getSortOrder().setAll(col);
-                col.setSortType(TableColumn.SortType.ASCENDING);
-                table.sort();
-            });
-            sortDescButton.setOnAction(e -> {
-                table.getSortOrder().setAll(col);
-                col.setSortType(TableColumn.SortType.DESCENDING);
-                table.sort();
-            });
-
-            Region spacer = new Region();
-            HBox.setHgrow(spacer, Priority.ALWAYS);
-            HBox headerBox = new HBox(4, headerLabel, spacer, sortAscButton, sortDescButton);
-            headerBox.setAlignment(Pos.CENTER_RIGHT);
-            col.getProperties().put("columnName", col.getText());
-            col.setText(null);
-            col.setGraphic(headerBox);
-
-            // カラムヘッダ用のコンテキストメニュー
-            ContextMenu headerMenu = new ContextMenu();
-            MenuItem hideItem = new MenuItem("このカラムを非表示");
-            hideItem.setOnAction(e -> col.setVisible(false));
-            headerMenu.getItems().add(hideItem);
-            col.setContextMenu(headerMenu);
-
-            // 列の表示/非表示が変更されたときにvisibleColumnIndicesを更新
-            col.visibleProperty().addListener((obs, oldVal, newVal) -> updateVisibleColumnIndices());
-
-            // カラム値コピー用のコンテキストメニュー
-            col.setCellFactory(tc -> {
-                TableCell<LogRow, String> cell = new TableCell<>() {
-                    @Override
-                    protected void updateItem(String item, boolean empty) {
-                        super.updateItem(item, empty);
-                        setText(empty ? null : item);
-                    }
-                };
-                cell.setOnMouseClicked(ev -> {
-                    if (!cell.isEmpty() && ev.isControlDown()) {
-                        ClipboardContent content = new ClipboardContent();
-                        content.putString(cell.getItem());
-                        Clipboard.getSystemClipboard().setContent(content);
-                    }
-                });
-                return cell;
-            });
-            table.getColumns().add(col);
+            table.getColumns().add(createDataColumn(i));
         }
 
         // 初期状態のvisibleColumnIndicesを構築
@@ -675,72 +429,383 @@ public class Main extends Application {
     }
 
     /**
+     * 行番号カラムを生成します。
+     * 
+     * @return 行番号カラム
+     */
+    private TableColumn<LogRow, Number> createLineNumberColumn() {
+        TableColumn<LogRow, Number> lineCol = new TableColumn<>("Line");
+        lineCol.setReorderable(false);
+        lineCol.setPrefWidth(81);
+        lineCol.setCellValueFactory(cd -> new ReadOnlyIntegerWrapper(cd.getValue().getLineNumber()));
+        lineCol.setSortable(false); // ボタン操作でのみソート
+
+        // ヘッダUI設定
+        HBox lineHeaderBox = createColumnHeader("Line", lineCol, 
+            () -> sortColumn(lineCol, TableColumn.SortType.ASCENDING),
+            () -> sortColumn(lineCol, TableColumn.SortType.DESCENDING));
+        lineCol.setText(null);
+        lineCol.setGraphic(lineHeaderBox);
+
+        // セルファクトリ設定（選択処理を含む）
+        lineCol.setCellFactory(col -> createLineNumberCell(lineCol));
+        
+        return lineCol;
+    }
+
+    /**
+     * データカラムを生成します。
+     * 
+     * @param colIndex カラムのインデックス
+     * @return データカラム
+     */
+    private TableColumn<LogRow, String> createDataColumn(int colIndex) {
+        TableColumn<LogRow, String> col = new TableColumn<>("Col " + colIndex);
+        col.setCellValueFactory(cellData -> new SimpleStringProperty(cellData.getValue().getField(colIndex)));
+        col.setPrefWidth(150);
+        col.setComparator((a, b) -> a.compareToIgnoreCase(b));
+        col.setUserData(colIndex); // カスタムソート用にインデックスを保持
+        col.setSortable(false); // ボタン操作に限定
+
+        // ヘッダUI設定
+        HBox headerBox = createColumnHeader("Col " + colIndex, col,
+            () -> sortColumn(col, TableColumn.SortType.ASCENDING),
+            () -> sortColumn(col, TableColumn.SortType.DESCENDING));
+        col.setText(null);
+        col.setGraphic(headerBox);
+
+        // ヘッダコンテキストメニュー
+        ContextMenu headerMenu = new ContextMenu();
+        MenuItem hideItem = new MenuItem("このカラムを非表示");
+        hideItem.setOnAction(e -> col.setVisible(false));
+        headerMenu.getItems().add(hideItem);
+        col.setContextMenu(headerMenu);
+
+        // 表示状態変更リスナー
+        col.visibleProperty().addListener((obs, oldVal, newVal) -> updateVisibleColumnIndices());
+
+        // セルファクトリ設定（コピー機能）
+        col.setCellFactory(tc -> createDataCell());
+        
+        return col;
+    }
+
+    /**
+     * カラムヘッダUIを生成します。
+     * 
+     * @param columnName カラム名
+     * @param column     カラム
+     * @param onAsc      昇順ボタン押下時の処理
+     * @param onDesc     降順ボタン押下時の処理
+     * @return ヘッダUI
+     */
+    /**
+     * カラムヘッダを作成します。
+     * 昇順・降順ボタンを含みます。
+     * 
+     * @param columnName カラム名
+     * @param column     TableColumn
+     * @param onAsc      昇順ボタン押下時の処理
+     * @param onDesc     降順ボタン押下時の処理
+     * @return ヘッダパネル
+     */
+    private HBox createColumnHeader(String columnName, TableColumn<?, ?> column, Runnable onAsc, Runnable onDesc) {
+        Label headerLabel = new Label(columnName);
+        Button sortAscButton = new Button("▲");
+        Button sortDescButton = new Button("▼");
+        
+        sortAscButton.setFocusTraversable(false);
+        sortDescButton.setFocusTraversable(false);
+        sortAscButton.setPadding(new Insets(0, 4, 0, 4));
+        sortDescButton.setPadding(new Insets(0, 4, 0, 4));
+        
+        sortAscButton.setOnAction(e -> onAsc.run());
+        sortDescButton.setOnAction(e -> onDesc.run());
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        
+        HBox headerBox = new HBox(4, headerLabel, spacer, sortAscButton, sortDescButton);
+        headerBox.setAlignment(Pos.CENTER_RIGHT);
+        column.getProperties().put("columnName", columnName);
+        
+        return headerBox;
+    }
+
+    /**
+     * カラムをソートします。
+     * 
+     * @param column カラム
+     * @param sortType ソート方向
+     */
+    /**
+     * カラムをソートします。
+     * ソート対象としてテーブルの sortOrder に追加します。
+     * 
+     * @param column   ソート対象のカラム
+     * @param sortType ソート順序 (昇順 or 降順)
+     */
+    private void sortColumn(TableColumn<LogRow, ?> column, TableColumn.SortType sortType) {
+        table.getSortOrder().setAll(java.util.List.of(column));
+        column.setSortType(sortType);
+        table.sort();
+    }
+
+    /**
+     * 行番号カラムのセルを生成します。
+     * 複数行選択機能（Ctrl/Shift キー対応）を含みます。
+     * 
+     * @param lineCol 行番号カラム
+     * @return 行番号セル
+     */
+    private TableCell<LogRow, Number> createLineNumberCell(TableColumn<LogRow, Number> lineCol) {
+        return new TableCell<>() {
+            {
+                setStyle("-fx-alignment: CENTER-RIGHT;");
+                addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, evt -> 
+                    handleLineNumberCellPress(evt, this, lineCol));
+            }
+
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : String.format(Locale.US, "%,d", item.intValue()));
+            }
+        };
+    }
+
+    /**
+     * 行番号セルのマウスプレス処理を行います。
+     * Ctrl/Shift キーに応じて選択モードを切り替えます。
+     * 
+     * @param evt マウスイベント
+     * @param cell セル
+     * @param lineCol 行番号カラム
+     */
+    /**
+     * 行番号セルのクリック処理をハンドルします。
+     * 修飾キー(Ctrl/Shift)に応じて異なる選択動作を実行します。
+     * 
+     * @param evt         マウスイベント
+     * @param cell        クリックされたセル
+     * @param lineCol     行番号カラム
+     */
+    private void handleLineNumberCellPress(javafx.scene.input.MouseEvent evt, TableCell<LogRow, Number> cell,
+                                           TableColumn<LogRow, Number> lineCol) {
+        if (cell.isEmpty() || cell.getTableRow() == null) {
+            return;
+        }
+
+        int rowIndex = cell.getIndex();
+        if (rowIndex < 0 || rowIndex >= table.getItems().size()) {
+            return;
+        }
+
+        boolean ctrlDown = evt.isControlDown();
+        boolean shiftDown = evt.isShiftDown();
+        int currentFocusedRow = table.getFocusModel().getFocusedIndex();
+        
+        TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
+        List<TableColumn<LogRow, ?>> columns = table.getColumns();
+
+        if (columns.isEmpty()) {
+            return;
+        }
+
+        if (ctrlDown) {
+            handleCtrlSelection(rowIndex, lineCol, sm, columns);
+        } else if (shiftDown) {
+            handleShiftSelection(rowIndex, currentFocusedRow, lineCol, sm, columns);
+        } else {
+            handleSimpleSelection(rowIndex, lineCol, sm, columns);
+        }
+
+        evt.consume();
+    }
+
+    /**
+     * Ctrl キー押下時の選択処理（トグル選択）を行います。
+     */
+    /**
+     * Ctrl キーを押しながらのセル選択処理を実行します。
+     * クリックされた行をトグル選択します。
+     * 
+     * @param rowIndex            クリックされた行インデックス
+     * @param lineCol             行番号カラム
+     * @param table               テーブル
+     */
+    private void handleCtrlSelection(int rowIndex, TableColumn<LogRow, Number> lineCol,
+                                      TableView.TableViewSelectionModel<LogRow> sm, List<TableColumn<LogRow, ?>> columns) {
+        @SuppressWarnings("unchecked")
+        ObservableList<TablePosition<LogRow, ?>> selectedCells = (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) sm
+                .getSelectedCells();
+        List<TablePosition<LogRow, ?>> savedSelection = new ArrayList<>(selectedCells);
+
+        boolean alreadySelected = savedSelection.stream()
+                .anyMatch(pos -> pos.getRow() == rowIndex);
+
+        sm.clearSelection();
+
+        if (alreadySelected) {
+            // 選択解除: この行以外を再選択
+            for (TablePosition<LogRow, ?> pos : savedSelection) {
+                if (pos.getRow() != rowIndex) {
+                    sm.select(pos.getRow(), pos.getTableColumn());
+                }
+            }
+        } else {
+            // 既存の選択を再適用
+            for (TablePosition<LogRow, ?> pos : savedSelection) {
+                sm.select(pos.getRow(), pos.getTableColumn());
+            }
+            // この行の全セルを追加
+            for (TableColumn<LogRow, ?> column : columns) {
+                sm.select(rowIndex, column);
+            }
+        }
+        table.getFocusModel().focus(rowIndex, lineCol);
+    }
+
+    /**
+     * Shift キー押下時の選択処理（範囲選択）を行います。
+     */
+    /**
+     * Shift キーを押しながらのセル選択処理を実行します。
+     * フォーカス位置からクリック位置までの行を範囲選択します。
+     * 
+     * @param rowIndex            クリックされた行インデックス
+     * @param currentFocusedRow   フォーカス位置の行インデックス
+     * @param lineCol             行番号カラム
+     * @param table               テーブル
+     */
+    private void handleShiftSelection(int rowIndex, int currentFocusedRow, TableColumn<LogRow, Number> lineCol,
+                                       TableView.TableViewSelectionModel<LogRow> sm, List<TableColumn<LogRow, ?>> columns) {
+        sm.clearSelection();
+        
+        if (currentFocusedRow >= 0 && currentFocusedRow < table.getItems().size()) {
+            int startRow = Math.min(currentFocusedRow, rowIndex);
+            int endRow = Math.max(currentFocusedRow, rowIndex);
+
+            for (int r = startRow; r <= endRow; r++) {
+                for (TableColumn<LogRow, ?> column : columns) {
+                    sm.select(r, column);
+                }
+            }
+        } else {
+            for (TableColumn<LogRow, ?> column : columns) {
+                sm.select(rowIndex, column);
+            }
+        }
+        table.getFocusModel().focus(rowIndex, lineCol);
+    }
+
+    /**
+     * 修飾キーなしの選択処理（単一行選択）を行います。
+     */
+    /**
+     * 修飾キーなしでのセル選択処理を実行します。
+     * クリックされた行のみを選択状態にします。
+     * 
+     * @param rowIndex  クリックされた行インデックス
+     * @param lineCol   行番号カラム
+     * @param table     テーブル
+     */
+    private void handleSimpleSelection(int rowIndex, TableColumn<LogRow, Number> lineCol,
+                                        TableView.TableViewSelectionModel<LogRow> sm, List<TableColumn<LogRow, ?>> columns) {
+        sm.clearSelection();
+        for (TableColumn<LogRow, ?> column : columns) {
+            sm.select(rowIndex, column);
+        }
+        table.getFocusModel().focus(rowIndex, lineCol);
+    }
+
+    /**
+     * データカラムのセルを生成します。
+     * Ctrl+クリックでセル値をコピー機能を含みます。
+     * 
+     * @return データセル
+     */
+    private TableCell<LogRow, String> createDataCell() {
+        return new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+            }
+
+            {
+                setOnMouseClicked(ev -> {
+                    if (!isEmpty() && ev.isControlDown()) {
+                        clipboardService.copyText(getItem());
+                    }
+                });
+            }
+        };
+    }
+
+    /**
      * 現在の列の表示状態に基づいてvisibleColumnIndicesを更新します。
      */
+    /**
+     * テーブルの表示・非表示カラムのインデックスリストを更新します。
+     * このリストはエクスポート時に使用されます。
+     */
     private void updateVisibleColumnIndices() {
-        visibleColumnIndices.clear();
+        List<Integer> indices = new ArrayList<>();
         for (int i = 1; i < table.getColumns().size(); i++) { // Line列(0)をスキップ
             TableColumn<LogRow, ?> col = table.getColumns().get(i);
             if (col.isVisible()) {
-                visibleColumnIndices.add(i - 1); // LogRowのフィールドインデックス
+                indices.add(i - 1); // LogRowのフィールドインデックス
             }
         }
+        model.setVisibleColumnIndices(indices);
     }
 
     /**
      * フィルタとソートをバックグラウンドで計算し、完了後にテーブルへ反映します。
      * 直前の計算タスクが残っていればキャンセルし、最新の入力・ソート条件で再計算します。
      */
+    /**
+     * フィルタとソート設定を適用して、テーブルを非同期で更新します。
+     * 複数の検索条件をすべて満たす行のみを表示します。
+     */
     private void refreshAsync() {
-        List<LogRow> snapshot = new ArrayList<>(baseData);
-        String filterText = filterField.getText();
-        String selectedColumn = columnSelector.getValue();
-        int targetSortIndex = sortColumnIndex;
-        boolean ascending = sortAscending;
+        List<LogRow> snapshot = new ArrayList<>(model.getBaseData());
+        String filterText = model.getSingleFilterText();
+        String selectedColumn = model.getSingleFilterColumn();
+        int targetSortIndex = model.getSortColumnIndex();
+        boolean ascending = model.isSortAscending();
         // ファイル読み込み直後の初回フィルタでは時刻を上書きしない
-        if (!skipFilterStatusUpdate) {
-            operationStartTime = System.nanoTime();
+        if (!model.isSkipFilterStatusUpdate()) {
+            model.setOperationStartTime(System.nanoTime());
         }
 
-        // 非同期タスクを生成(フィルタリング + ソート)
-        Task<List<LogRow>> task = new Task<>() {
-            @Override
-            protected List<LogRow> call() {
-                // 複数条件が存在する場合は複数条件を優先
-                Predicate<LogRow> predicate;
-                if (!filterConditions.isEmpty()) {
-                    predicate = buildMultiplePredicate();
-                } else {
-                    predicate = buildPredicate(filterText, selectedColumn);
-                }
-                
-                Comparator<LogRow> comparator = buildComparator(targetSortIndex, ascending);
+        // 複数条件が存在する場合は複数条件を優先
+        Predicate<LogRow> predicate;
+        if (!filterConditionPanel.getConditions().isEmpty()) {
+            predicate = buildMultiplePredicate();
+        } else {
+            // FilterServiceを使用してPredicateを構築
+            int columnIndex = "All".equals(selectedColumn) ? -1 : columnSelector.getSelectionModel().getSelectedIndex() - 1;
+            predicate = filterService.buildPredicate(filterText, selectedColumn, columnIndex);
+        }
+        
+        // SortServiceを使用してComparatorを構築
+        Comparator<LogRow> comparator = sortService.buildComparator(targetSortIndex, ascending);
 
-                List<LogRow> result = new ArrayList<>();
-                for (LogRow row : snapshot) {
-                    if (isCancelled())
-                        break;
-                    if (predicate.test(row)) {
-                        result.add(row);
-                    }
-                }
-                if (!isCancelled()) {
-                    result.sort(comparator);
-                }
-                return result;
-            }
-        };
+        // FilterSortService でフィルタとソートを実行
+        Task<List<LogRow>> task = filterSortService.filterAndSortAsync(snapshot, predicate, comparator);
 
         task.setOnSucceeded(evt -> {
             List<LogRow> result = task.getValue();
-            long elapsedMillis = (System.nanoTime() - operationStartTime) / 1_000_000;
+            long elapsedMillis = (System.nanoTime() - model.getOperationStartTime()) / 1_000_000;
             double elapsedSeconds = elapsedMillis / 1000.0;
             // ファイル読み込み直後のリスナー発火ではステータス更新をスキップ
-            if (!skipFilterStatusUpdate && !baseData.isEmpty()) {
-                updateStatus(String.format("フィルタ/ソートが完了しました。結果 %,d 行、処理時間 %.2f 秒", result.size(), elapsedSeconds));
+            if (!model.isSkipFilterStatusUpdate() && !model.getBaseData().isEmpty()) {
+                model.setStatusMessage(String.format("フィルタ/ソートが完了しました。結果 %,d 行、処理時間 %.2f 秒", result.size(), elapsedSeconds));
             }
-            skipFilterStatusUpdate = false;
-            tableData.setAll(result);
+            model.setSkipFilterStatusUpdate(false);
+            model.setTableData(result);
         });
 
         task.setOnFailed(evt -> {
@@ -762,18 +827,11 @@ public class Main extends Application {
     }
 
     /**
-     * ステータスバーのメッセージを更新します。
-     * 
-     * @param message 表示するメッセージ
+     * カラムの表示/非表示を切り替えるダイアログを表示します。
      */
-    private void updateStatus(String message) {
-        if (statusLabel != null) {
-            statusLabel.setText(message);
-        }
-    }
-
     /**
      * カラムの表示/非表示を切り替えるダイアログを表示します。
+     * ユーザーがカラムの表示/非表示を設定できます。
      */
     private void showColumnVisibilityDialog() {
         if (table.getColumns().isEmpty()) {
@@ -818,72 +876,6 @@ public class Main extends Application {
     }
 
     /**
-     * 現在のフィルタ文字列と列指定から述語を構築します。/regex/ 形式は正規表現として評価し、
-     * 無効な正規表現はフィルタなしとして扱います。"All" 指定時は全カラムを走査します。
-     * 
-     * @param text     フィルタ入力値
-     * @param selected 選択中のカラム名（"All" または "Column N"）
-     * @return フィルタ用Predicate
-     */
-    private Predicate<LogRow> buildPredicate(String text, String selected) {
-        if (selected == null) {
-            selected = "All";
-        }
-        if (text == null || text.isBlank()) {
-            return r -> true;
-        }
-
-        String trimmed = text.trim();
-        boolean isRegex = trimmed.length() >= 2 && trimmed.startsWith("/") && trimmed.endsWith("/");
-
-        if (isRegex) {
-            String patternText = trimmed.substring(1, trimmed.length() - 1);
-            Pattern pattern;
-            try {
-                pattern = Pattern.compile(patternText);
-            } catch (PatternSyntaxException e) {
-                return r -> true; // 無効な正規表現は素通り扱い
-            }
-
-            if ("All".equals(selected)) {
-                return r -> {
-                    for (int i = 0; i < r.fieldCount(); i++) {
-                        if (pattern.matcher(r.getField(i)).matches())
-                            return true;
-                    }
-                    return false;
-                };
-            } else {
-                int idx = columnSelector.getSelectionModel().getSelectedIndex() - 1; // "All" が0のためインデックスを1つ引く
-                return r -> {
-                    if (idx < 0 || idx >= r.fieldCount())
-                        return false;
-                    return pattern.matcher(r.getField(idx)).matches();
-                };
-            }
-        } else {
-            String q = trimmed.toLowerCase(Locale.ROOT);
-            if ("All".equals(selected)) {
-                return r -> {
-                    for (int i = 0; i < r.fieldCount(); i++) {
-                        String v = r.getField(i);
-                        if (v.toLowerCase(Locale.ROOT).contains(q))
-                            return true;
-                    }
-                    return false;
-                };
-            } else {
-                int idx = columnSelector.getSelectionModel().getSelectedIndex() - 1;
-                return r -> {
-                    if (idx < 0 || idx >= r.fieldCount())
-                        return false;
-                    return r.getField(idx).toLowerCase(Locale.ROOT).contains(q);
-                };
-            }
-        }
-    }
-    
-    /**
      * 複数の検索条件を組み合わせたPredicateを構築します。
      * すべての条件にマッチする行のみを通過させます（AND条件）。
      * 
@@ -891,8 +883,8 @@ public class Main extends Application {
      */
     private Predicate<LogRow> buildMultiplePredicate() {
         List<Predicate<LogRow>> predicates = new ArrayList<>();
-        
-        for (FilterCondition condition : filterConditions) {
+
+        for (FilterConditionPanel.FilterCondition condition : filterConditionPanel.getConditions()) {
             String text = condition.filterField.getText();
             String selected = condition.columnSelector.getValue();
             
@@ -900,111 +892,24 @@ public class Main extends Application {
                 continue; // 空の条件はスキップ
             }
             
-            // 各条件に対してPredicateを作成
-            Predicate<LogRow> p = buildSingleConditionPredicate(text, selected, condition.columnSelector);
+            // FilterServiceを使用してPredicateを作成
+            int columnIndex = "All".equals(selected) ? -1 : condition.columnSelector.getSelectionModel().getSelectedIndex() - 1;
+            Predicate<LogRow> p = filterService.buildPredicate(text, selected, columnIndex);
             predicates.add(p);
         }
         
-        // すべての条件を満たす必要がある（AND結合）
-        if (predicates.isEmpty()) {
-            return r -> true;
-        }
-        
-        return r -> {
-            for (Predicate<LogRow> p : predicates) {
-                if (!p.test(r)) {
-                    return false;
-                }
-            }
-            return true;
-        };
-    }
-    
-    /**
-     * 単一の検索条件からPredicateを構築します。
-     * 
-     * @param text テキスト条件
-     * @param selected 選択されたカラム名
-     * @param combo カラム選択用のComboBox
-     * @return 単一条件のPredicate
-     */
-    private Predicate<LogRow> buildSingleConditionPredicate(String text, String selected, ComboBox<String> combo) {
-        if (selected == null) {
-            selected = "All";
-        }
-        
-        String trimmed = text.trim();
-        boolean isRegex = trimmed.length() >= 2 && trimmed.startsWith("/") && trimmed.endsWith("/");
-
-        if (isRegex) {
-            String patternText = trimmed.substring(1, trimmed.length() - 1);
-            Pattern pattern;
-            try {
-                pattern = Pattern.compile(patternText);
-            } catch (PatternSyntaxException e) {
-                return r -> true; // 無効な正規表現は素通り扱い
-            }
-
-            if ("All".equals(selected)) {
-                return r -> {
-                    for (int i = 0; i < r.fieldCount(); i++) {
-                        if (pattern.matcher(r.getField(i)).matches())
-                            return true;
-                    }
-                    return false;
-                };
-            } else {
-                int idx = combo.getSelectionModel().getSelectedIndex() - 1;
-                return r -> {
-                    if (idx < 0 || idx >= r.fieldCount())
-                        return false;
-                    return pattern.matcher(r.getField(idx)).matches();
-                };
-            }
-        } else {
-            String q = trimmed.toLowerCase(Locale.ROOT);
-            if ("All".equals(selected)) {
-                return r -> {
-                    for (int i = 0; i < r.fieldCount(); i++) {
-                        String v = r.getField(i);
-                        if (v.toLowerCase(Locale.ROOT).contains(q))
-                            return true;
-                    }
-                    return false;
-                };
-            } else {
-                int idx = combo.getSelectionModel().getSelectedIndex() - 1;
-                return r -> {
-                    if (idx < 0 || idx >= r.fieldCount())
-                        return false;
-                    return r.getField(idx).toLowerCase(Locale.ROOT).contains(q);
-                };
-            }
-        }
-    }
-
-    /**
-     * ソート対象カラムと昇順/降順指定からComparatorを組み立てます。
-     * 行番号ソート時は整数比較、データ列ソート時は小文字化した文字列比較を行います。
-     * 
-     * @param columnIndex ソート対象カラムインデックス（-1で行番号）
-     * @param ascending   昇順ならtrue、降順ならfalse
-     * @return ロウ比較用Comparator
-     */
-    private Comparator<LogRow> buildComparator(int columnIndex, boolean ascending) {
-        Comparator<LogRow> comparator;
-        if (columnIndex < 0) {
-            comparator = Comparator.comparingInt(LogRow::getLineNumber);
-        } else {
-            comparator = Comparator.comparing(r -> r.getField(columnIndex).toLowerCase(Locale.ROOT));
-        }
-        return ascending ? comparator : comparator.reversed();
+        // FilterServiceを使用して複数条件を結合
+        return filterService.combinePredicates(predicates);
     }
 
     /**
      * 選択中のセルまたは行をクリップボードへコピーします。
      * 1行の全カラムが選ばれている場合はタブ区切りで行全体をコピーし、
      * 部分選択の場合は選択セルを行順に改行区切りでコピーします。
+     */
+    /**
+     * テーブルの選択セルをテキストにしてクリップボードにコピーします。
+     * 複数セルが選択されている場合はタブ区切りで結合します。
      */
     private void copySelection() {
         TableView.TableViewSelectionModel<LogRow> sm = table.getSelectionModel();
@@ -1075,9 +980,7 @@ public class Main extends Application {
             }
         }
 
-        ClipboardContent content = new ClipboardContent();
-        content.putString(clipboardString.toString());
-        Clipboard.getSystemClipboard().setContent(content);
+        clipboardService.copyText(clipboardString.toString());
     }
 
     /**
@@ -1085,8 +988,12 @@ public class Main extends Application {
      * ユーザーが入力した行番号が表示中のデータ（フィルタ適用後）に存在する場合、
      * その行を選択してスクロールします。
      */
+    /**
+     * 指定行番号へジャンプするダイアログを表示します。
+     * ユーザーが行番号を入力するとその行にスクロール移動します。
+     */
     private void showGoToLineDialog() {
-        if (tableData.isEmpty()) {
+        if (model.getTableData().isEmpty()) {
             Alert alert = new Alert(Alert.AlertType.INFORMATION);
             alert.setTitle("移動");
             alert.setHeaderText(null);
@@ -1110,13 +1017,7 @@ public class Main extends Application {
                 }
 
                 // 表示中のデータから該当する行番号を持つ行を検索
-                int foundIndex = -1;
-                for (int i = 0; i < tableData.size(); i++) {
-                    if (tableData.get(i).getLineNumber() == lineNumber) {
-                        foundIndex = i;
-                        break;
-                    }
-                }
+                int foundIndex = navigationService.findRowIndexByLineNumber(model.getTableData(), lineNumber);
 
                 if (foundIndex >= 0) {
                     // 該当行を選択してスクロール
@@ -1126,11 +1027,11 @@ public class Main extends Application {
                     table.requestFocus();
                 } else {
                     // 該当行が見つからない場合、フィルタで除外されているか存在しない
-                    if (lineNumber <= baseData.size()) {
+                    if (lineNumber <= model.getBaseData().size()) {
                         showAlert("情報", String.format("行番号 %d は現在のフィルタ条件で非表示になっています。", lineNumber));
                     } else {
                         showAlert("情報", String.format("行番号 %d は存在しません。%s（最大行番号: %d）", lineNumber, LINE_SEPARATOR,
-                                baseData.size()));
+                                model.getBaseData().size()));
                     }
                 }
             } catch (NumberFormatException ex) {
@@ -1140,13 +1041,19 @@ public class Main extends Application {
     }
 
     /**
-     * 現在表示されているデータをTSVファイルにエクスポートします。
+     * 表示中のデータをTSVファイルにエクスポートします。
      * フィルタ/ソート適用後のデータが対象です。
      * 
      * @param stage ファイル保存ダイアログを表示するステージ
      */
+    /**
+     * 表示中のデータをエクスポートします。
+     * ファイル保存ダイアログを表示して、選択されたパスに TSV 形式で保存します。
+     * 
+     * @param stage ダイアログの親ステージ
+     */
     private void exportDisplayedData(Stage stage) {
-        if (tableData.isEmpty()) {
+        if (model.getTableData().isEmpty()) {
             showAlert("情報", "エクスポートするデータがありません。");
             return;
         }
@@ -1159,47 +1066,12 @@ public class Main extends Application {
 
         if (file != null) {
             // データのスナップショットを取得（UIスレッドで）
-            List<LogRow> dataSnapshot = new ArrayList<>(tableData);
-            
-            // 可視列のインデックスリストのスナップショットを作成
-            List<Integer> visibleIndicesSnapshot = new ArrayList<>(visibleColumnIndices);
-            
+            List<LogRow> dataSnapshot = new ArrayList<>(model.getTableData());
+            List<Integer> visibleIndicesSnapshot = new ArrayList<>(model.getVisibleColumnIndices());
             Path outputPath = file.toPath();
 
-            // バックグラウンドタスクで処理
-            Task<Integer> task = new Task<>() {
-                @Override
-                protected Integer call() throws Exception {
-                    StringBuilder content = new StringBuilder();
-                    int rowCount = 0;
-
-                    for (LogRow row : dataSnapshot) {
-                        if (isCancelled())
-                            break;
-
-                        boolean first = true;
-                        for (int colIndex : visibleIndicesSnapshot) {
-                            if (!first)
-                                content.append("\t");
-                            first = false;
-                            content.append(row.getField(colIndex));
-                        }
-                        content.append(LINE_SEPARATOR);
-                        rowCount++;
-
-                        // 1000行ごとに進捗更新
-                        if (rowCount % 1000 == 0) {
-                            updateProgress(rowCount, dataSnapshot.size());
-                        }
-                    }
-
-                    if (!isCancelled()) {
-                        Files.writeString(outputPath, content.toString(), StandardCharsets.UTF_8);
-                    }
-
-                    return rowCount;
-                }
-            };
+            // FileIOService でバックグラウンドタスクを生成
+            Task<Integer> task = fileIOService.exportDisplayedDataAsync(dataSnapshot, visibleIndicesSnapshot, outputPath);
 
             task.setOnSucceeded(evt -> {
                 int rowCount = task.getValue();
@@ -1216,7 +1088,7 @@ public class Main extends Application {
             });
 
             // プログレスダイアログを表示
-            showProgressDialog(task, "エクスポート中...", stage);
+            progressDialogService.show(task, "エクスポート中...", stage);
 
             Thread t = new Thread(task, "export-data-thread");
             t.setDaemon(true);
@@ -1230,6 +1102,12 @@ public class Main extends Application {
      * 
      * @param stage ファイル保存ダイアログを表示するステージ
      */
+    /**
+     * 選択されている行をエクスポートします。
+     * ファイル保存ダイアログを表示して、選択されたパスに TSV 形式で保存します。
+     * 
+     * @param stage ダイアログの親ステージ
+     */
     private void exportSelectedRows(Stage stage) {
         @SuppressWarnings("unchecked")
         ObservableList<TablePosition<LogRow, ?>> selectedCells = (ObservableList<TablePosition<LogRow, ?>>) (ObservableList<?>) table
@@ -1240,7 +1118,7 @@ public class Main extends Application {
             return;
         }
 
-        if (visibleColumnIndices.isEmpty()) {
+        if (model.getVisibleColumnIndices().isEmpty()) {
             showAlert("情報", "表示されている列がありません。");
             return;
         }
@@ -1264,46 +1142,12 @@ public class Main extends Application {
         if (file != null) {
             // スナップショットを取得（UIスレッドで）
             List<LogRow> itemsSnapshot = new ArrayList<>(table.getItems());
-            List<Integer> visibleIndicesSnapshot = new ArrayList<>(visibleColumnIndices);
+            List<Integer> visibleIndicesSnapshot = new ArrayList<>(model.getVisibleColumnIndices());
             Path outputPath = file.toPath();
 
-            Task<Integer> task = new Task<>() {
-                @Override
-                protected Integer call() throws Exception {
-                    StringBuilder content = new StringBuilder();
-                    int processedCount = 0;
-
-                    for (int rowIndex : selectedRowIndices) {
-                        if (isCancelled())
-                            break;
-
-                        if (rowIndex < 0 || rowIndex >= itemsSnapshot.size()) {
-                            continue;
-                        }
-
-                        LogRow row = itemsSnapshot.get(rowIndex);
-                        boolean first = true;
-                        for (int colIndex : visibleIndicesSnapshot) {
-                            if (!first)
-                                content.append("\t");
-                            first = false;
-                            content.append(row.getField(colIndex));
-                        }
-                        content.append(LINE_SEPARATOR);
-
-                        processedCount++;
-                        if (processedCount % 500 == 0) {
-                            updateProgress(processedCount, selectedRowIndices.size());
-                        }
-                    }
-
-                    if (!isCancelled()) {
-                        Files.writeString(outputPath, content.toString(), StandardCharsets.UTF_8);
-                    }
-
-                    return processedCount;
-                }
-            };
+            // FileIOService でバックグラウンドタスクを生成
+            Task<Integer> task = fileIOService.exportSelectedRowsAsync(
+                itemsSnapshot, selectedRowIndices, visibleIndicesSnapshot, outputPath);
 
             task.setOnSucceeded(evt -> {
                 int rowCount = task.getValue();
@@ -1319,7 +1163,7 @@ public class Main extends Application {
                 alert.showAndWait();
             });
 
-            showProgressDialog(task, "選択行をエクスポート中...", stage);
+            progressDialogService.show(task, "選択行をエクスポート中...", stage);
 
             Thread t = new Thread(task, "export-selected-rows-thread");
             t.setDaemon(true);
@@ -1328,53 +1172,18 @@ public class Main extends Application {
     }
 
     /**
-     * タスクの進捗を表示するダイアログを表示します。
-     * 
-     * @param task  実行中のタスク
-     * @param title ダイアログのタイトル
-     * @param owner 親ウィンドウ
-     */
-    private void showProgressDialog(Task<?> task, String title, Stage owner) {
-        ProgressBar progressBar = new ProgressBar();
-        progressBar.setPrefWidth(300);
-        progressBar.progressProperty().bind(task.progressProperty());
-
-        Label messageLabel = new Label("処理中...");
-        messageLabel.textProperty().bind(task.messageProperty());
-
-        VBox content = new VBox(10, messageLabel, progressBar);
-        content.setPadding(new Insets(20));
-        content.setAlignment(Pos.CENTER);
-
-        Stage progressStage = new Stage();
-        progressStage.setTitle(title);
-        progressStage.initOwner(owner);
-        progressStage.setScene(new Scene(content));
-        progressStage.setResizable(false);
-        progressStage.setOnCloseRequest(evt -> {
-            if (task.isRunning()) {
-                task.cancel();
-            }
-        });
-
-        // タスク完了時にダイアログを閉じる（既存ハンドラを保持するためaddEventHandlerを使用）
-        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_SUCCEEDED, evt -> progressStage.close());
-        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_FAILED, evt -> progressStage.close());
-        task.addEventHandler(javafx.concurrent.WorkerStateEvent.WORKER_STATE_CANCELLED, evt -> progressStage.close());
-
-        progressStage.show();
-    }
-
-    /**
      * 検索条件パネルの表示/非表示を切り替えます。
      */
+    /**
+     * 複数検索条件パネルの表示/非表示を切り替えます。
+     */
     private void toggleFilterPanel() {
-        if (centerPane.getItems().contains(leftPanel)) {
+        if (centerPane.getItems().contains(filterConditionPanel)) {
             // パネルを閉じる
-            centerPane.getItems().remove(leftPanel);
+            centerPane.getItems().remove(filterConditionPanel);
         } else {
             // パネルを開く
-            centerPane.getItems().add(0, leftPanel);
+            centerPane.getItems().add(0, filterConditionPanel);
             Platform.runLater(() -> centerPane.setDividerPositions(0.20));
         }
     }
@@ -1384,132 +1193,18 @@ public class Main extends Application {
      * 
      * @return 検索条件パネル
      */
-    private VBox createFilterConditionPanel() {
-        VBox panel = new VBox(10);
-        panel.setPadding(new Insets(10));
-        panel.setStyle("-fx-background-color: #f5f5f5; -fx-border-color: #cccccc; -fx-border-width: 0 1 0 0;");
-        
-        Label titleLabel = new Label("検索条件");
-        titleLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
-        
-        // 検索条件リスト表示用のVBox
-        filterConditionListPane = new VBox(5);
-        filterConditionListPane.setPadding(new Insets(5, 0, 5, 0));
-        
-        // スクロールペイン
-        ScrollPane scrollPane = new ScrollPane(filterConditionListPane);
-        scrollPane.setFitToWidth(true);
-        scrollPane.setStyle("-fx-background-color: transparent;");
-        VBox.setVgrow(scrollPane, Priority.ALWAYS);
-        
-        // ボタンエリア
-        Button addButton = new Button("＋ 条件を追加");
-        addButton.setMaxWidth(Double.MAX_VALUE);
-        addButton.setOnAction(e -> addFilterCondition());
-        
-        Button applyButton = new Button("適用");
-        applyButton.setMaxWidth(Double.MAX_VALUE);
-        applyButton.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white;");
-        applyButton.setOnAction(e -> applyMultipleFilters());
-        
-        Button clearAllButton = new Button("すべてクリア");
-        clearAllButton.setMaxWidth(Double.MAX_VALUE);
-        clearAllButton.setOnAction(e -> clearAllFilters());
-        
-        VBox buttonBox = new VBox(5, addButton, applyButton, clearAllButton);
-        
-        panel.getChildren().addAll(titleLabel, new Separator(), scrollPane, buttonBox);
-        panel.setPrefWidth(300);
-        panel.setMinWidth(200);
-        
-        return panel;
-    }
-    
     /**
-     * 検索条件を追加します。
-     */
-    private void addFilterCondition() {
-        FilterCondition condition = new FilterCondition();
-        filterConditions.add(condition);
-        
-        HBox conditionPane = new HBox(5);
-        conditionPane.setPadding(new Insets(5));
-        conditionPane.setStyle("-fx-background-color: white; -fx-border-color: #cccccc; -fx-border-width: 1; -fx-border-radius: 3;");
-        
-        VBox contentBox = new VBox(5);
-        
-        // カラム選択
-        ComboBox<String> columnCombo = new ComboBox<>();
-        columnCombo.getItems().add("All");
-        columnCombo.getItems().addAll(columnSelector.getItems().stream()
-            .filter(s -> !s.equals("All"))
-            .toList());
-        columnCombo.getSelectionModel().selectFirst();
-        columnCombo.setMaxWidth(Double.MAX_VALUE);
-        condition.columnSelector = columnCombo;
-        
-        // 検索テキスト
-        TextField filterText = new TextField();
-        filterText.setPromptText("検索文字列");
-        filterText.setMaxWidth(Double.MAX_VALUE);
-        condition.filterField = filterText;
-        
-        contentBox.getChildren().addAll(
-            new Label("カラム:"),
-            columnCombo,
-            new Label("条件:"),
-            filterText
-        );
-        
-        // 削除ボタン
-        Button removeButton = new Button("ー");
-        removeButton.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
-        removeButton.setOnAction(e -> {
-            filterConditions.remove(condition);
-            filterConditionListPane.getChildren().remove(conditionPane);
-        });
-        
-        HBox.setHgrow(contentBox, Priority.ALWAYS);
-        conditionPane.getChildren().addAll(contentBox, removeButton);
-        
-        filterConditionListPane.getChildren().add(conditionPane);
-    }
-    
-    /**
-     * 既存の検索条件のカラムセレクタを更新します。
+     * 複数検索条件パネルを作成します。
+     * 検索条件の追加・削除・適用を管理します。
      * 
-     * @param columns カラム名のリスト
+     * @return FilterConditionPanel インスタンス
      */
-    private void updateFilterConditionColumns(List<String> columns) {
-        for (FilterCondition condition : filterConditions) {
-            String currentSelection = condition.columnSelector.getValue();
-            condition.columnSelector.getItems().setAll(columns);
-            
-            // 以前の選択を復元（存在する場合）
-            if (columns.contains(currentSelection)) {
-                condition.columnSelector.setValue(currentSelection);
-            } else {
-                condition.columnSelector.getSelectionModel().selectFirst();
-            }
-        }
+    private FilterConditionPanel createFilterConditionPanel() {
+        List<String> columns = new ArrayList<>();
+        columns.add("All");
+        return new FilterConditionPanel(columns, this::refreshAsync, this::refreshAsync);
     }
     
-    /**
-     * 複数の検索条件を適用します。
-     */
-    private void applyMultipleFilters() {
-        refreshAsync();
-    }
-    
-    /**
-     * すべての検索条件をクリアします。
-     */
-    private void clearAllFilters() {
-        filterConditions.clear();
-        filterConditionListPane.getChildren().clear();
-        refreshAsync();
-    }
-
     /**
      * アラートダイアログを表示します。
      * 
@@ -1524,14 +1219,6 @@ public class Main extends Application {
         alert.showAndWait();
     }
     
-    /**
-     * 検索条件を保持するクラス
-     */
-    private static class FilterCondition {
-        ComboBox<String> columnSelector;
-        TextField filterField;
-    }
-
     /**
      * JavaFXアプリケーションのエントリポイント。
      * 
