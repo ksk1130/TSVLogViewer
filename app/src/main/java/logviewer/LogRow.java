@@ -5,14 +5,17 @@ import java.util.List;
 
 /**
  * TSVログの1行分を表すクラス。
+ * 複数のフィールド（カラム）と行番号を保持します。
  */
 public class LogRow {
     private final List<String> fields;
     private final int lineNumber;
+    
     /**
      * 1行分のフィールド配列と行番号を保持するLogRowを生成します。
-     * @param parts TSVを分割したフィールド配列
-     * @param lineNumber 元ファイルでの行番号（1始まり）
+     * 
+     * @param parts       TSVを分割したフィールド配列
+     * @param lineNumber  元ファイルでの行番号（1始まり）
      */
     public LogRow(String[] parts, int lineNumber) {
         this.lineNumber = lineNumber;
@@ -20,7 +23,9 @@ public class LogRow {
         for (String p : parts) fields.add(p);
     }
     /**
-     * 指定インデックスのフィールド値を返します。範囲外の場合は空文字を返します。
+     * 指定インデックスのフィールド値を返します。
+     * 範囲外の場合は空文字を返します。
+     * 
      * @param index 取得するフィールドのインデックス
      * @return フィールド文字列または空文字
      */
@@ -31,6 +36,8 @@ public class LogRow {
     }
     /**
      * 行番号を返します。
+     * 元ファイルでの位置（1始まり）です。
+     * 
      * @return 元ファイルの行番号
      */
     public int getLineNumber() {
@@ -38,6 +45,7 @@ public class LogRow {
     }
     /**
      * 保持しているフィールド数を返します。
+     * 
      * @return フィールド数
      */
     public int fieldCount() {
