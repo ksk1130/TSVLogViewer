@@ -244,4 +244,56 @@ public class LogViewerModelTest {
         
         assertEquals(0, model.getVisibleColumnIndices().size());
     }
+
+    /**
+     * 通常系：現在のファイル名を設定・取得。
+     */
+    @Test
+    public void testSetAndGetCurrentFileName() {
+        String fileName = "sample_log.tsv";
+        model.setCurrentFileName(fileName);
+        
+        assertEquals(fileName, model.getCurrentFileName());
+    }
+
+    /**
+     * 通常系：初期状態でのファイル名は空文字列。
+     */
+    @Test
+    public void testInitialCurrentFileName() {
+        assertEquals("", model.getCurrentFileName());
+    }
+
+    /**
+     * 境界値：nullファイル名を設定した場合は空文字列になる。
+     */
+    @Test
+    public void testSetCurrentFileNameNull() {
+        model.setCurrentFileName(null);
+        
+        assertEquals("", model.getCurrentFileName());
+    }
+
+    /**
+     * 通常系：ファイル名を複数回更新。
+     */
+    @Test
+    public void testUpdateCurrentFileName() {
+        model.setCurrentFileName("file1.tsv");
+        assertEquals("file1.tsv", model.getCurrentFileName());
+        
+        model.setCurrentFileName("file2.tsv");
+        assertEquals("file2.tsv", model.getCurrentFileName());
+    }
+
+    /**
+     * 通常系：特殊文字を含むファイル名。
+     */
+    @Test
+    public void testCurrentFileNameWithSpecialCharacters() {
+        String fileName = "sample-log_2024.01.01.tsv";
+        model.setCurrentFileName(fileName);
+        
+        assertEquals(fileName, model.getCurrentFileName());
+    }
 }

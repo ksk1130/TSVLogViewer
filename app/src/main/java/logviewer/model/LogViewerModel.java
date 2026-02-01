@@ -27,6 +27,7 @@ public class LogViewerModel {
     
     // ===== UI状態 =====
     private final StringProperty statusMessage = new SimpleStringProperty("準備完了");
+    private String currentFileName = "";  // 現在読み込んでいるファイル名（パス除外）
     private int columnCount = 0;
     private long operationStartTime = 0;
     private boolean skipFilterStatusUpdate = false;
@@ -140,6 +141,15 @@ public class LogViewerModel {
     public boolean isSkipFilterStatusUpdate() {
         return skipFilterStatusUpdate;
     }
+
+    /**
+     * 現在読み込んでいるファイル名を取得します。
+     * 
+     * @return ファイル名（パスを除いた部分のみ）
+     */
+    public String getCurrentFileName() {
+        return currentFileName;
+    }
     
     // ===== Setters =====
     
@@ -191,6 +201,15 @@ public class LogViewerModel {
      */
     public void setSkipFilterStatusUpdate(boolean skip) {
         this.skipFilterStatusUpdate = skip;
+    }
+
+    /**
+     * 現在読み込んでいるファイル名を設定します。
+     * 
+     * @param fileName ファイル名（パスを除いた部分のみ）
+     */
+    public void setCurrentFileName(String fileName) {
+        this.currentFileName = fileName != null ? fileName : "";
     }
     
     /**

@@ -21,6 +21,7 @@ public class MainController {
     private final FileIOService fileIOService;
     private final FilterService filterService;
     private final AtomicReference<Task<?>> currentLoadTask = new AtomicReference<>();
+    private Path currentLoadPath = null;  // 現在読み込んでいるファイルのパス
 
     /**
      * コンストラクタ。
@@ -107,6 +108,8 @@ public class MainController {
             previous.cancel();
         }
 
+        this.currentLoadPath = path;  // ファイルパスを記録
+
         if (onStart != null) {
             onStart.run();
         }
@@ -128,5 +131,14 @@ public class MainController {
         t.setDaemon(true);
         t.start();
         return task;
+    }
+
+    /**
+     * 現在読み込んでいるファイルのパスを取得します。
+     *
+     * @return ファイルパス
+     */
+    public Path getCurrentLoadPath() {
+        return currentLoadPath;
     }
 }
