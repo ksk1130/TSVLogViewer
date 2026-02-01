@@ -248,6 +248,14 @@ public class Main extends Application {
         if (result == null) {
             return;
         }
+        
+        // ファイル名をモデルに設定
+        Path currentPath = controller.getCurrentLoadPath();
+        if (currentPath != null) {
+            String fileName = currentPath.getFileName().toString();
+            model.setCurrentFileName(fileName);
+        }
+        
         model.addBaseDataRows(result.rows);
         finalizeLoad(result.columns, result.truncated);
     }
@@ -298,6 +306,12 @@ public class Main extends Application {
 
         model.setColumnCount(columns);
         rebuildColumns(columns);
+        
+        // カラムの表示/非表示設定を復元
+        String fileName = model.getCurrentFileName();
+        if (fileName != null && !fileName.isEmpty()) {
+            dialogService.restoreColumnVisibility(fileName);
+        }
 
         List<String> cols = new ArrayList<>();
         cols.add("All");

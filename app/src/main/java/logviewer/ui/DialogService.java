@@ -13,6 +13,10 @@ import javafx.scene.layout.VBox;
 import logviewer.LogRow;
 import logviewer.model.LogViewerModel;
 import logviewer.service.NavigationService;
+import logviewer.service.ColumnVisibilityConfigService;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * ダイアログ処理を担当するサービスクラス。
@@ -24,6 +28,7 @@ public class DialogService {
     private final LogViewerModel model;
     private final NavigationService navigationService;
     private final TableView<LogRow> table;
+    private final ColumnVisibilityConfigService configService;
 
     /**
      * DialogService のコンストラクタ。
@@ -37,6 +42,7 @@ public class DialogService {
         this.model = model;
         this.navigationService = navigationService;
         this.table = table;
+        this.configService = new ColumnVisibilityConfigService();
     }
 
     /**
@@ -93,7 +99,7 @@ public class DialogService {
 
     /**
      * カラムの表示/非表示を切り替えるダイアログを表示します。
-     * ユーザーがカラムの表示/非表示を設定できます。
+     * ユーザーがカラムの表示/非表示を設定でき、OKボタンでの確定時に設定が自動保存されます。
      */
     public void showColumnVisibilityDialog() {
         if (table.getColumns().isEmpty()) {
@@ -113,7 +119,17 @@ public class DialogService {
         // 行番号カラムはスキップ（常に表示）
         for (int i = 1; i < table.getColumns().size(); i++) {
             var col = table.getColumns().get(i);
-            String colName = col.getText();
+            
+            // カラム名を取得（UserDataからインデックスを取得して名前を生成）
+            String colName;
+            Object userData = col.getUserData();
+            if (userData instanceof Integer) {
+                int colIndex = (Integer) userData;
+                colName = "Col " + colIndex;
+            } else {
+                // フォールバック：インデックスから直接生成
+                colName = "Column " + (i - 1);
+            }
             
             CheckBox checkbox = new CheckBox(colName);
             checkbox.setSelected(col.isVisible());
@@ -124,7 +140,59 @@ public class DialogService {
 
         dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().add(ButtonType.OK);
+        
+        dialog.setOnCloseRequest(e -> {
+            // OKボタンまたはXボタンで閉じた時に設定を保存
+            saveColumnVisibility();
+        });
+        
         dialog.showAndWait();
+    }
+
+    /**
+     * 現在のカラム表示/非表示設定を設定ファイルに保存します。
+     */
+    public void saveColumnVisibility() {
+        String fileName = model.getCurrentFileName();
+        if (fileName == null || fileName.isEmpty()) {
+            return;  // ファイルが読み込まれていない場合はスキップ
+        }
+
+        List<Integer> hiddenColumns = new ArrayList<>();
+        // 行番号カラムはスキップ（インデックス0）
+        for (int i = 1; i < table.getColumns().size(); i++) {
+            if (!table.getColumns().get(i).isVisible()) {
+                // インデックス1以上のカラムが非表示の場合、i-1をカラムインデックスとして記録
+                hiddenColumns.add(i - 1);
+            }
+        }
+
+        configService.saveHiddenColumns(fileName, hiddenColumns);
+    }
+
+    /**
+     * 指定されたファイル名のカラム表示/非表示設定を復元して、テーブルに反映します。
+     *
+     * @param fileName ファイル名（パスを除いたファイル名のみ）
+     */
+    public void restoreColumnVisibility(String fileName) {
+        if (table.getColumns().isEmpty()) {
+            return;  // テーブルが初期化されていない場合はスキップ
+        }
+
+        List<Integer> hiddenColumns = configService.loadHiddenColumns(fileName);
+
+        // 最初はすべてのカラムを表示
+        for (int i = 1; i < table.getColumns().size(); i++) {
+            table.getColumns().get(i).setVisible(true);
+        }
+
+        // 非表示設定されていたカラムを非表示にする
+        for (Integer hiddenIndex : hiddenColumns) {
+            if (hiddenIndex >= 0 && hiddenIndex < table.getColumns().size() - 1) {
+                table.getColumns().get(hiddenIndex + 1).setVisible(false);
+            }
+        }
     }
 
     /**
