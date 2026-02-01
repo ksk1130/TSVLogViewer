@@ -219,10 +219,6 @@ public class Main extends Application {
     /**
      * ファイル読み込み開始時のUI初期化を行います。
      */
-    /**
-     * ファイル読み込み前の準備処理を実行します。
-     * テーブルをクリアしメッセージを表示します。
-     */
     private void prepareForFileLoad() {
         model.clearAllData();
         table.getColumns().clear();
@@ -233,11 +229,6 @@ public class Main extends Application {
         model.setOperationStartTime(System.nanoTime());
     }
 
-    /**
-     * ファイル読み込み成功時の処理を行います。
-     * 
-     * @param result 読み込み結果
-     */
     /**
      * ファイル読み込み完了時の処理を実行します。
      * テーブルにデータを反映します。
@@ -265,12 +256,6 @@ public class Main extends Application {
      * 
      * @param ex 例外
      */
-    /**
-     * ファイル読み込み失敗時の処理を実行します。
-     * エラー情報を表示します。
-     * 
-     * @param ex 例外
-     */
     private void onFileLoadFailed(Throwable ex) {
         Alert a = new Alert(Alert.AlertType.ERROR,
                 "ファイルの読み込みに失敗しました: " + (ex == null ? "不明なエラー" : ex.getMessage()),
@@ -286,13 +271,6 @@ public class Main extends Application {
      * 
      * @param columns   検出された列数
      * @param truncated 行数上限で打ち切られた場合は true
-     */
-    /**
-     * ファイル読み込み完了後の最終処理を実行します。
-     * カラムの再構築やフィルタのリセット、ステータス表示などを行います。
-     * 
-     * @param columns   カラム数
-     * @param truncated ファイルが切り詰められたかどうか
      */
     private void finalizeLoad(int columns, boolean truncated) {
         // columnSelectorの設定でリスナーが発火してrefreshAsyncが呼ばれる可能性があるため、
@@ -341,11 +319,6 @@ public class Main extends Application {
         }
     }
 
-    /**
-     * 行番号列とデータ列を動的に生成し、列ごとにソート用インデックスやセルコピー動作を付与します。
-     * 
-     * @param columns 生成するデータ列数
-     */
     /**
      * テーブルのカラムを動的に再構築します。
      * 指定されたカラム数に応じてカラムを追加します。
@@ -431,15 +404,6 @@ public class Main extends Application {
     }
 
     /**
-     * カラムヘッダUIを生成します。
-     * 
-     * @param columnName カラム名
-     * @param column     カラム
-     * @param onAsc      昇順ボタン押下時の処理
-     * @param onDesc     降順ボタン押下時の処理
-     * @return ヘッダUI
-     */
-    /**
      * カラムヘッダを作成します。
      * 昇順・降順ボタンを含みます。
      * 
@@ -478,13 +442,6 @@ public class Main extends Application {
      * @param column カラム
      * @param sortType ソート方向
      */
-    /**
-     * カラムをソートします。
-     * ソート対象としてテーブルの sortOrder に追加します。
-     * 
-     * @param column   ソート対象のカラム
-     * @param sortType ソート順序 (昇順 or 降順)
-     */
     private void sortColumn(TableColumn<LogRow, ?> column, TableColumn.SortType sortType) {
         table.getSortOrder().setAll(java.util.List.of(column));
         column.setSortType(sortType);
@@ -514,14 +471,6 @@ public class Main extends Application {
         };
     }
 
-    /**
-     * 行番号セルのマウスプレス処理を行います。
-     * Ctrl/Shift キーに応じて選択モードを切り替えます。
-     * 
-     * @param evt マウスイベント
-     * @param cell セル
-     * @param lineCol 行番号カラム
-     */
     /**
      * 行番号セルのクリック処理をハンドルします。
      * 修飾キー(Ctrl/Shift)に応じて異なる選択動作を実行します。
@@ -561,9 +510,6 @@ public class Main extends Application {
     }
 
     /**
-     * 現在の列の表示状態に基づいてvisibleColumnIndicesを更新します。
-     */
-    /**
      * テーブルの表示・非表示カラムのインデックスリストを更新します。
      * このリストはエクスポート時に使用されます。
      */
@@ -581,10 +527,6 @@ public class Main extends Application {
     /**
      * フィルタとソートをバックグラウンドで計算し、完了後にテーブルへ反映します。
      * 直前の計算タスクが残っていればキャンセルし、最新の入力・ソート条件で再計算します。
-     */
-    /**
-     * フィルタとソート設定を適用して、テーブルを非同期で更新します。
-     * 複数の検索条件をすべて満たす行のみを表示します。
      */
     private void refreshAsync() {
         List<LogRow> snapshot = new ArrayList<>(model.getBaseData());
@@ -683,11 +625,6 @@ public class Main extends Application {
     }
 
     /**
-     * 選択中のセルまたは行をクリップボードへコピーします。
-     * 1行の全カラムが選ばれている場合はタブ区切りで行全体をコピーし、
-     * 部分選択の場合は選択セルを行順に改行区切りでコピーします。
-     */
-    /**
      * テーブルの選択セルをテキストにしてクリップボードにコピーします。
      * 複数セルが選択されている場合はタブ区切りで結合します。
      */
@@ -768,10 +705,6 @@ public class Main extends Application {
      * ユーザーが入力した行番号が表示中のデータ（フィルタ適用後）に存在する場合、
      * その行を選択してスクロールします。
      */
-    /**
-     * 指定行番号へジャンプするダイアログを表示します。
-     * ユーザーが行番号を入力するとその行にスクロール移動します。
-     */
     private void showGoToLineDialog() {
         dialogService.showGoToLineDialog();
     }
@@ -782,12 +715,6 @@ public class Main extends Application {
      * 
      * @param stage ファイル保存ダイアログを表示するステージ
      */
-    /**
-     * 表示中のデータをエクスポートします。
-     * ファイル保存ダイアログを表示して、選択されたパスに TSV 形式で保存します。
-     * 
-     * @param stage ダイアログの親ステージ
-     */
     private void exportDisplayedData(Stage stage) {
         exportController.exportDisplayedData(stage);
     }
@@ -797,12 +724,6 @@ public class Main extends Application {
      * 表示中の列のみを対象にします。
      * 
      * @param stage ファイル保存ダイアログを表示するステージ
-     */
-    /**
-     * 選択されている行をエクスポートします。
-     * ファイル保存ダイアログを表示して、選択されたパスに TSV 形式で保存します。
-     * 
-     * @param stage ダイアログの親ステージ
      */
     private void exportSelectedRows(Stage stage) {
         @SuppressWarnings("unchecked")
@@ -870,9 +791,6 @@ public class Main extends Application {
     /**
      * 検索条件パネルの表示/非表示を切り替えます。
      */
-    /**
-     * 複数検索条件パネルの表示/非表示を切り替えます。
-     */
     private void toggleFilterPanel() {
         if (centerPane.getItems().contains(filterConditionPanel)) {
             // パネルを閉じる
@@ -888,12 +806,6 @@ public class Main extends Application {
      * 複数検索条件パネルを作成します。
      * 
      * @return 検索条件パネル
-     */
-    /**
-     * 複数検索条件パネルを作成します。
-     * 検索条件の追加・削除・適用を管理します。
-     * 
-     * @return FilterConditionPanel インスタンス
      */
     private FilterConditionPanel createFilterConditionPanel() {
         List<String> columns = new ArrayList<>();
