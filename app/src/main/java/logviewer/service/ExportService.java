@@ -12,7 +12,6 @@ import java.util.List;
  * ファイルエクスポート処理を担当するサービスクラス。
  */
 public class ExportService {
-    private static final String LINE_SEPARATOR = "\r\n";
     
     /**
      * 表示中のデータをTSVファイルにエクスポートするタスクを生成します。
@@ -37,12 +36,12 @@ public class ExportService {
                     boolean first = true;
                     for (int colIndex : visibleIndices) {
                         if (!first) {
-                            content.append("\t");
+                            content.append(ServiceConstants.TAB_SEPARATOR);
                         }
                         first = false;
                         content.append(row.getField(colIndex));
                     }
-                    content.append(LINE_SEPARATOR);
+                    content.append(ServiceConstants.LINE_SEPARATOR);
                     rowCount++;
 
                     // 1000行ごとに進捗更新
@@ -95,12 +94,12 @@ public class ExportService {
                     boolean first = true;
                     for (int colIndex : visibleIndices) {
                         if (!first) {
-                            content.append("\t");
+                            content.append(ServiceConstants.TAB_SEPARATOR);
                         }
                         first = false;
                         content.append(row.getField(colIndex));
                     }
-                    content.append(LINE_SEPARATOR);
+                    content.append(ServiceConstants.LINE_SEPARATOR);
 
                     processedCount++;
                     if (processedCount % 500 == 0) {

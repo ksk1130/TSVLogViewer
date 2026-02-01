@@ -35,6 +35,7 @@ import logviewer.service.NavigationService;
 import logviewer.service.SortService;
 import logviewer.service.SelectionService;
 import logviewer.service.FileLoadResult;
+import logviewer.service.ServiceConstants;
 import logviewer.ui.DragAndDropHandler;
 import logviewer.ui.FilterConditionPanel;
 import logviewer.ui.MenuBarFactory;
@@ -57,10 +58,6 @@ import java.util.function.Predicate;
  * 大容量ファイルにも対応し、フィルタリングやソート、セル選択・コピー機能を備えています。
  */
 public class Main extends Application {
-    // 定数: 最大行数
-    private static final int MAX_ROWS = 20_000_000;
-    private static final String LINE_SEPARATOR = "\r\n";
-
     // ===== モデル =====
     private final LogViewerModel model = new LogViewerModel();
     
@@ -323,7 +320,7 @@ public class Main extends Application {
         model.setTableData(new ArrayList<>(model.getBaseData()));
 
         if (truncated) {
-            String message = String.format("メモリ使用量を抑えるため、ファイルは %,d 行で打ち切られました。", MAX_ROWS);
+            String message = String.format("メモリ使用量を抑えるため、ファイルは %,d 行で打ち切られました。", ServiceConstants.MAX_ROWS);
             Alert info = new Alert(Alert.AlertType.INFORMATION, message, ButtonType.OK);
             info.setHeaderText(null);
             info.showAndWait();
@@ -729,14 +726,14 @@ public class Main extends Application {
                             clipboardString.append("\t");
                         clipboardString.append(logRow.getField(i));
                     }
-                    clipboardString.append(LINE_SEPARATOR);
+                    clipboardString.append(ServiceConstants.LINE_SEPARATOR);
                 }
             }
         } else {
             // 単一セルまたは部分選択の場合 - 選択セルをコピー
             for (TablePosition<LogRow, ?> pos : selectedCells) {
                 if (currentRow != -1 && currentRow != pos.getRow()) {
-                    clipboardString.append(LINE_SEPARATOR);
+                    clipboardString.append(ServiceConstants.LINE_SEPARATOR);
                 }
                 currentRow = pos.getRow();
 

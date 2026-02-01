@@ -15,9 +15,6 @@ import java.util.List;
  * ファイル読み込みとエクスポート機能を提供します。
  */
 public class FileIOService {
-    private static final int MAX_ROWS = 20_000_000;
-    private static final int BATCH_SIZE = 5_000;
-    private static final String LINE_SEPARATOR = "\r\n";
 
     /**
      * 読み込み対象としてサポートされているファイルかどうか判定します。
@@ -30,7 +27,7 @@ public class FileIOService {
             return false;
         }
         String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
-        return name.endsWith(".tsv") || name.endsWith(".txt");
+        return name.endsWith(ServiceConstants.TSV_EXTENSION) || name.endsWith(ServiceConstants.TXT_EXTENSION);
     }
     
     // ===== ファイル読み込み =====
@@ -49,21 +46,21 @@ public class FileIOService {
                 int columnCount = 0;
                 boolean truncated = false;
                 
-                updateProgress(0, MAX_ROWS);
+                updateProgress(0, ServiceConstants.MAX_ROWS);
                 updateMessage("0 行読み込み中...");
 
                 try (BufferedReader br = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                     String line;
                     int count = 0;
-                    List<LogRow> buffer = new ArrayList<>(BATCH_SIZE);
+                    List<LogRow> buffer = new ArrayList<>(ServiceConstants.BATCH_SIZE);
 
                     while ((line = br.readLine()) != null) {
-                        if (count >= MAX_ROWS) {
+                        if (count >= ServiceConstants.MAX_ROWS) {
                             truncated = true;
                             break;
                         }
 
-                        String[] parts = line.split("\t", -1);
+                        String[] parts = line.split(ServiceConstants.TAB_SEPARATOR, -1);
                         if (parts.length > columnCount) {
                             columnCount = parts.length;
                         }
@@ -71,11 +68,11 @@ public class FileIOService {
                         count++;
 
                         if (count % 1_000 == 0) {
-                            updateProgress(count, MAX_ROWS);
+                            updateProgress(count, ServiceConstants.MAX_ROWS);
                             updateMessage(String.format("%,d 行読み込み中...", count));
                         }
 
-                        if (buffer.size() >= BATCH_SIZE) {
+                        if (buffer.size() >= ServiceConstants.BATCH_SIZE) {
                             rows.addAll(buffer);
                             buffer.clear();
                         }
@@ -84,7 +81,7 @@ public class FileIOService {
                     if (!buffer.isEmpty()) {
                         rows.addAll(buffer);
                     }
-                    updateProgress(count, MAX_ROWS);
+                    updateProgress(count, ServiceConstants.MAX_ROWS);
                     updateMessage(String.format("読み込み完了 処理中... (%,d 行)", count));
                 }
 
@@ -118,12 +115,12 @@ public class FileIOService {
                     boolean first = true;
                     for (int colIndex : visibleIndices) {
                         if (!first) {
-                            content.append("\t");
+                            content.append(ServiceConstants.TAB_SEPARATOR);
                         }
                         first = false;
                         content.append(row.getField(colIndex));
                     }
-                    content.append(LINE_SEPARATOR);
+                    content.append(ServiceConstants.LINE_SEPARATOR);
                     rowCount++;
 
                     // 1000行ごとに進捗更新
@@ -176,12 +173,12 @@ public class FileIOService {
                     boolean first = true;
                     for (int colIndex : visibleIndices) {
                         if (!first) {
-                            content.append("\t");
+                            content.append(ServiceConstants.TAB_SEPARATOR);
                         }
                         first = false;
                         content.append(row.getField(colIndex));
                     }
-                    content.append(LINE_SEPARATOR);
+                    content.append(ServiceConstants.LINE_SEPARATOR);
 
                     processedCount++;
                     if (processedCount % 500 == 0) {
