@@ -81,16 +81,16 @@ public class DragAndDropHandler {
 
     /**
      * ファイルがサポート対象かどうか判定します。
+     * 実際のテキストファイル判定は読み込み時に isTextFile() で行われるため、
+     * ここでは true を返します。
      * 
      * @param path ファイルパス
-     * @return サポート対象なら true
+     * @return 常に true（テキストファイル判定は読み込み時に行われます）
      */
     private boolean isSupported(Path path) {
-        if (fileIOService.isSupportedInputFile(path)) {
-            return true;
-        }
-        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-        return name.endsWith(".tsv") || name.endsWith(".txt");
+        // 拡張子制限は撤廃されたため、常に true を返す
+        // 実際のテキストファイル判定は loadFileAsync() 内で行われます
+        return true;
     }
 
     /**

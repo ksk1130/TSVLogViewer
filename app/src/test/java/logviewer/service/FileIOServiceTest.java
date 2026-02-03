@@ -23,6 +23,7 @@ public class FileIOServiceTest {
 
     /**
      * isSupportedInputFile の判定を確認します。
+     * 拡張子に基づく制限は撤廃されたため、すべてのファイルで true を返します。
      */
     @Test
     public void testIsSupportedInputFile() throws Exception {
@@ -32,9 +33,11 @@ public class FileIOServiceTest {
         File txt = tempFolder.newFile("sample.txt");
         File csv = tempFolder.newFile("sample.csv");
 
+        // 拡張子制限は撤廃されたため、すべてのファイルで true を返す
         assertTrue(service.isSupportedInputFile(tsv.toPath()));
         assertTrue(service.isSupportedInputFile(txt.toPath()));
-        assertFalse(service.isSupportedInputFile(csv.toPath()));
+        assertTrue(service.isSupportedInputFile(csv.toPath()));
+        // null のみ false を返す
         assertFalse(service.isSupportedInputFile(null));
     }
 
@@ -48,6 +51,7 @@ public class FileIOServiceTest {
         File tsvUpper = tempFolder.newFile("sample.TSV");
         File txtUpper = tempFolder.newFile("sample.TXT");
 
+        // 拡張子制限は撤廃されたため、すべてのファイルで true を返す
         assertTrue(service.isSupportedInputFile(tsvUpper.toPath()));
         assertTrue(service.isSupportedInputFile(txtUpper.toPath()));
     }
@@ -62,6 +66,7 @@ public class FileIOServiceTest {
         File tsvMixed = tempFolder.newFile("sample.Tsv");
         File txtMixed = tempFolder.newFile("sample.TxT");
 
+        // 拡張子制限は撤廃されたため、すべてのファイルで true を返す
         assertTrue(service.isSupportedInputFile(tsvMixed.toPath()));
         assertTrue(service.isSupportedInputFile(txtMixed.toPath()));
     }
