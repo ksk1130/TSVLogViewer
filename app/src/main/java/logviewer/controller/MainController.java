@@ -80,7 +80,7 @@ public class MainController {
     ) {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("ログファイルを開く");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("TSV / Text files", "*.tsv", "*.txt", "*.*"));
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("All files", "*.*"));
         File f = chooser.showOpenDialog(stage);
         if (f == null) {
             return null;

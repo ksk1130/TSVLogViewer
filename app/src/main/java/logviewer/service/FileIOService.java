@@ -18,19 +18,50 @@ public class FileIOService {
 
     /**
      * 読み込み対象としてサポートされているファイルかどうか判定します。
-     *
+     * このメソッドは常に true を返します。実際のテキストファイル判定は
+     * loadFileAsync() の中で isTextFile() により行われます。
+     * 
+     * @deprecated このメソッドは互換性のため残されていますが、
+     *             実際のテキストファイル判定は isTextFile() で行われます
      * @param path ファイルパス
      * @return サポート対象なら true
      */
+    @Deprecated(since = "2.0", forRemoval = false)
     public boolean isSupportedInputFile(Path path) {
         if (path == null || path.getFileName() == null) {
             return false;
         }
-        String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
-        return name.endsWith(ServiceConstants.TSV_EXTENSION) || name.endsWith(ServiceConstants.TXT_EXTENSION);
+        // 拡張子に基づく制限は撤廃されたため、常に true を返す
+        return true;
     }
     
     // ===== ファイル読み込み =====
+    
+    /**
+     * ファイルがテキストファイルかどうかを判定します。
+     * 最初の8KBを読み込んでNullバイトを探すことで、簡易的にバイナリ判定を行います。
+     *
+     * @param path ファイルパス
+     * @return テキストファイルと判定できたら true
+     * @throws Exception ファイル読み込みエラーが発生した場合
+     */
+    private boolean isTextFile(Path path) throws Exception {
+        byte[] buffer = new byte[8192]; // 最初の8KBを読む
+        try (var inputStream = Files.newInputStream(path)) {
+            int bytesRead = inputStream.read(buffer);
+            if (bytesRead == 0) {
+                // 空ファイルはテキストファイルと判定
+                return true;
+            }
+            // Nullバイトがあればバイナリと判定
+            for (int i = 0; i < bytesRead; i++) {
+                if (buffer[i] == 0) {
+                    return false; // バイナリファイル
+                }
+            }
+        }
+        return true; // テキストファイル
+    }
     
     /**
      * ファイルを非同期で読み込むタスクを生成します。
@@ -42,6 +73,11 @@ public class FileIOService {
         return new Task<>() {
             @Override
             protected FileLoadResult call() throws Exception {
+                // テキストファイルかどうか判定
+                if (!isTextFile(path)) {
+                    throw new IllegalArgumentException("バイナリファイルは開けません。テキストファイルを選択してください。");
+                }
+                
                 List<LogRow> rows = new ArrayList<>();
                 int columnCount = 0;
                 boolean truncated = false;
