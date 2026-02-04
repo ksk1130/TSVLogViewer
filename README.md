@@ -14,6 +14,7 @@
 - **詳細表示**: 行をダブルクリックで全フィールドを表示
 - **クイックコピー**: Ctrl+クリックでセルの内容をクリップボードにコピー
 - **ドラッグ＆ドロップ**: ファイルをウィンドウにドラッグして読み込み
+- **ファイルを閉じる**: Ctrl+W でファイルをクローズ
 - **エクスポート機能**: フィルタされたデータを別のファイルに出力
 - **列の表示/非表示**: 特定の列を選択的に表示・非表示
 
@@ -52,6 +53,24 @@ gradlew.bat run
 gradlew.bat build
 ```
 
+### テスト実行
+
+```bash
+# すべてのテストを実行
+# Linux/Mac
+./gradlew test
+
+# Windows
+gradlew.bat test
+
+# 特定のテストクラスのみ実行
+# Linux/Mac
+./gradlew test --tests "logviewer.controller.MainControllerTest"
+
+# Windows
+gradlew.bat test --tests "logviewer.controller.MainControllerTest"
+```
+
 ### 配布版の作成
 
 ```bash
@@ -62,23 +81,27 @@ run-create-dist-no-cache.bat
 ## 使い方
 
 1. **ファイルを開く**: 
-   - メニューバーから `File → Open...` を選択するか
+   - メニューバーから `File → Open...` を選択するか (Ctrl+O)
    - ファイルをウィンドウにドラッグ＆ドロップ
 
-2. **フィルタリング**: 
+2. **ファイルを閉じる**:
+   - メニューバーから `File → Close` を選択するか (Ctrl+W)
+   - テーブルがクリアされ、新しいファイルを開く準備ができます
+
+3. **フィルタリング**: 
    - `Column` ドロップダウンで対象列を選択（`All` で全列検索）
    - `Filter` テキストボックスに検索文字列を入力
    - 正規表現を使用する場合は `/regex/` の形式で入力（例: `/ERROR|FATAL/`）
 
-3. **ソート**: 列ヘッダをクリックして昇順・降順を切り替え
+4. **ソート**: 列ヘッダをクリックして昇順・降順を切り替え
 
-4. **詳細表示**: 行をダブルクリックで全フィールドの詳細を表示
+5. **詳細表示**: 行をダブルクリックで全フィールドの詳細を表示
 
-5. **コピー**: Ctrl を押しながらセルをクリックして内容をコピー
+6. **コピー**: Ctrl を押しながらセルをクリックして内容をコピー
 
-6. **列の管理**: 右クリックまたはメニューから列の表示/非表示を設定
+7. **列の管理**: 右クリックまたはメニューから列の表示/非表示を設定
 
-7. **データエクスポート**: フィルタされたデータを File → Export で出力
+8. **データエクスポート**: フィルタされたデータを File → Export で出力
 
 ## サンプルファイル
 
@@ -155,7 +178,7 @@ TSVLogViewer/
 ### コンポーネント詳細
 
 #### Controller層
-- **MainController**: ファイル読み込みと全体的なイベント制御
+- **MainController**: ファイル読み込み・クローズと全体的なイベント制御
 - **ExportController**: フィルタされたデータのエクスポート機能
 
 #### Service層
@@ -189,16 +212,22 @@ TSVLogViewer/
 1. ファイル読み込み
    User → Main (File Open) → MainController → FileIOService
    → LogRow リスト → LogViewerModel.baseData
+   → UI 初期化（テーブル列・フィルタ列リストのクリア）
 
-2. フィルタ・ソート適用
+2. ファイルクローズ
+   User → Main (File Close/Ctrl+W) → MainController
+   → データクリア（baseData・tableData）
+   → UI 初期化（テーブル列・フィルタ列リスト・フィルタテキストのクリア）
+
+3. フィルタ・ソート適用
    FilterService / SortService → FilterSortService
    → LogViewerModel.tableData (UI表示用)
 
-3. 詳細表示
+4. 詳細表示
    User (Double Click) → Main → DialogService
    → LogRow の全フィールド表示
 
-4. クリップボードコピー
+5. クリップボードコピー
    User (Ctrl+Click) → ClipboardService
    → Clipboard (OS)
 ```

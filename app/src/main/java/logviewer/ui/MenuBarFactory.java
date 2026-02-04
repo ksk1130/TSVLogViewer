@@ -69,15 +69,17 @@ public class MenuBarFactory {
      * @param onPrepareForFileLoad ファイル読み込み準備時のコールバック
      * @param onFileLoaded ファイル読み込み成功時のコールバック
      * @param onFileLoadFailed ファイル読み込み失敗時のコールバック
+     * @param onFileClosed ファイルクローズ時のコールバック
      * @return 構築されたメニューバー
      */
     public MenuBar build(Stage primaryStage, 
                         Runnable onPrepareForFileLoad,
                         Consumer<FileLoadResult> onFileLoaded,
-                        Consumer<Throwable> onFileLoadFailed) {
+                        Consumer<Throwable> onFileLoadFailed,
+                        Runnable onFileClosed) {
         MenuBar menuBar = new MenuBar();
         
-        Menu fileMenu = buildFileMenu(primaryStage, onPrepareForFileLoad, onFileLoaded, onFileLoadFailed);
+        Menu fileMenu = buildFileMenu(primaryStage, onPrepareForFileLoad, onFileLoaded, onFileLoadFailed, onFileClosed);
         Menu editMenu = buildEditMenu();
         Menu columnMenu = buildColumnMenu();
         Menu goMenu = buildGoMenu();
@@ -92,7 +94,8 @@ public class MenuBarFactory {
     private Menu buildFileMenu(Stage primaryStage,
                               Runnable onPrepareForFileLoad,
                               Consumer<FileLoadResult> onFileLoaded,
-                              Consumer<Throwable> onFileLoadFailed) {
+                              Consumer<Throwable> onFileLoadFailed,
+                              Runnable onFileClosed) {
         Menu fileMenu = new Menu("ファイル(_F)");
         
         MenuItem openItem = new MenuItem("開く...");
@@ -109,6 +112,11 @@ public class MenuBarFactory {
             }
         });
 
+        MenuItem closeItem = new MenuItem("閉じる");
+        closeItem.setAccelerator(new KeyCodeCombination(KeyCode.W, KeyCombination.CONTROL_DOWN));
+        closeItem.setOnAction(e -> controller.handleCloseFile(onFileClosed));
+        closeItem.disableProperty().bind(Bindings.isEmpty(model.getTableData()));
+
         MenuItem exportDisplayedItem = new MenuItem("表示中のデータをエクスポート...");
         exportDisplayedItem.setOnAction(e -> onExportDisplayedData.run());
         exportDisplayedItem.disableProperty().bind(Bindings.isEmpty(model.getTableData()));
@@ -122,7 +130,7 @@ public class MenuBarFactory {
         MenuItem exitItem = new MenuItem("終了");
         exitItem.setOnAction(e -> Platform.exit());
         
-        fileMenu.getItems().addAll(openItem, new SeparatorMenuItem(), exportDisplayedItem, exportSelectedRowsItem,
+        fileMenu.getItems().addAll(openItem, closeItem, new SeparatorMenuItem(), exportDisplayedItem, exportSelectedRowsItem,
             new SeparatorMenuItem(), exitItem);
         
         return fileMenu;
