@@ -296,4 +296,29 @@ public class LogViewerModelTest {
         
         assertEquals(fileName, model.getCurrentFileName());
     }
+
+    /**
+     * 通常系：ファイル名プロパティを監視。
+     */
+    @Test
+    public void testCurrentFileNameProperty() {
+        assertNotNull(model.currentFileNameProperty());
+        
+        model.setCurrentFileName("test.tsv");
+        assertEquals("test.tsv", model.currentFileNameProperty().get());
+    }
+
+    /**
+     * 通常系：ファイル名プロパティの変更リスナー。
+     */
+    @Test
+    public void testCurrentFileNamePropertyListener() {
+        final String[] changedValue = {null};
+        model.currentFileNameProperty().addListener((obs, oldVal, newVal) -> {
+            changedValue[0] = newVal;
+        });
+        
+        model.setCurrentFileName("listener_test.tsv");
+        assertEquals("listener_test.tsv", changedValue[0]);
+    }
 }
