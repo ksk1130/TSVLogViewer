@@ -197,7 +197,12 @@ public class Main extends Application {
         root.setBottom(statusBar);
 
         Scene scene = new Scene(root, 1500, 800);
-        primaryStage.setTitle("TSV Log Viewer");
+        // タイトルバーにファイル名をバインド
+        primaryStage.titleProperty().bind(
+            Bindings.when(model.currentFileNameProperty().isEmpty())
+                .then("TSV Log Viewer")
+                .otherwise(Bindings.concat("TSV Log Viewer - ", model.currentFileNameProperty()))
+        );
         primaryStage.setScene(scene);
         primaryStage.show();
     }
@@ -240,6 +245,7 @@ public class Main extends Application {
         columnSelector.getSelectionModel().selectFirst();
         filterField.clear();
         table.setPlaceholder(new Label("ファイルを開いてください"));
+        model.setCurrentFileName("");  // タイトルバーのファイル名をリセット
     }
 
     /**

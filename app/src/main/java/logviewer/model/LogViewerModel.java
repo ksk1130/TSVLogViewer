@@ -27,7 +27,7 @@ public class LogViewerModel {
     
     // ===== UI状態 =====
     private final StringProperty statusMessage = new SimpleStringProperty("準備完了");
-    private String currentFileName = "";  // 現在読み込んでいるファイル名（パス除外）
+    private final StringProperty currentFileName = new SimpleStringProperty("");  // 現在読み込んでいるファイル名（パス除外）
     private int columnCount = 0;
     private long operationStartTime = 0;
     private boolean skipFilterStatusUpdate = false;
@@ -143,12 +143,22 @@ public class LogViewerModel {
     }
 
     /**
+     * 現在読み込んでいるファイル名プロパティを取得します。
+     * リアルタイムでファイル名の変更を監視するため、このプロパティにバインディングできます。
+     * 
+     * @return ファイル名プロパティ
+     */
+    public StringProperty currentFileNameProperty() {
+        return currentFileName;
+    }
+
+    /**
      * 現在読み込んでいるファイル名を取得します。
      * 
      * @return ファイル名（パスを除いた部分のみ）
      */
     public String getCurrentFileName() {
-        return currentFileName;
+        return currentFileName.get();
     }
     
     // ===== Setters =====
@@ -209,7 +219,7 @@ public class LogViewerModel {
      * @param fileName ファイル名（パスを除いた部分のみ）
      */
     public void setCurrentFileName(String fileName) {
-        this.currentFileName = fileName != null ? fileName : "";
+        this.currentFileName.set(fileName != null ? fileName : "");
     }
     
     /**
