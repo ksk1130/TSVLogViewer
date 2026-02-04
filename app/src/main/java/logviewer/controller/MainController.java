@@ -141,4 +141,30 @@ public class MainController {
     public Path getCurrentLoadPath() {
         return currentLoadPath;
     }
+
+    /**
+     * ファイルを閉じます。
+     * テーブルをクリア、ファイルパスをリセット、実行中のタスクをキャンセルします。
+     * 
+     * @param onClosed 閉じた後のコールバック
+     */
+    public void handleCloseFile(Runnable onClosed) {
+        // 実行中のロードタスクをキャンセル
+        Task<?> previous = currentLoadTask.getAndSet(null);
+        if (previous != null) {
+            previous.cancel();
+        }
+
+        // ファイルパスをリセット
+        this.currentLoadPath = null;
+
+        // モデルをクリア
+        model.clearAllData();
+        model.setStatusMessage("準備完了");
+
+        // コールバック実行
+        if (onClosed != null) {
+            onClosed.run();
+        }
+    }
 }

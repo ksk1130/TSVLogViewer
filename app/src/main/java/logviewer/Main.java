@@ -116,7 +116,8 @@ public class Main extends Application {
         MenuBar menuBar = menuBarFactory.build(primaryStage,
             this::prepareForFileLoad,
             this::onFileLoaded,
-            this::onFileLoadFailed
+            this::onFileLoadFailed,
+            this::cleanupAfterCloseFile
         );
 
         // 左側パネル: 複数検索条件
@@ -212,7 +213,8 @@ public class Main extends Application {
         return menuBarFactory.build(primaryStage,
             this::prepareForFileLoad,
             this::onFileLoaded,
-            this::onFileLoadFailed
+            this::onFileLoadFailed,
+            this::cleanupAfterCloseFile
         );
     }
 
@@ -227,6 +229,17 @@ public class Main extends Application {
         table.setPlaceholder(new Label("Loading..."));
         model.setStatusMessage("ファイルを読み込み中...");
         model.setOperationStartTime(System.nanoTime());
+    }
+
+    /**
+     * ファイルクローズ時のUI初期化を行います。
+     */
+    private void cleanupAfterCloseFile() {
+        table.getColumns().clear();
+        columnSelector.getItems().setAll("All");
+        columnSelector.getSelectionModel().selectFirst();
+        filterField.clear();
+        table.setPlaceholder(new Label("ファイルを開いてください"));
     }
 
     /**
