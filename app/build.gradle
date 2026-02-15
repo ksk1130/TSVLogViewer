@@ -85,6 +85,8 @@ task createMinimalJRE {
             def modules = baseModules.join(',')
             if (includeJavaFX) {
                 modules += ',javafx.controls,javafx.fxml'
+            } else {
+                throw new GradleException('JavaFX jmods not found. Set JAVAFX_JMODS or pass -PjavafxJmods=path to OpenJFX jmods.')
             }
 
             logger.lifecycle("Creating minimal JRE with jlink...")
@@ -383,6 +385,139 @@ Created: ${timestamp}
 """)
                 }
         })
+}
+
+// jpackage用の入力ディレクトリを準備（app JAR + 依存JAR）
+tasks.register('prepareJpackageInput') {
+    description = 'Prepare jpackage input (app jar + dependency jars)'
+    group = 'distribution'
+    dependsOn 'build'
+
+    def buildDirProvider = project.layout.buildDirectory
+
+    doLast(new org.gradle.api.Action() {
+        void execute(def task) {
+            def logger = task.logger
+            def buildDirPath = buildDirProvider.get().asFile.absolutePath
+            def inputDir = new File("$buildDirPath/jpackage-input")
+
+            if (inputDir.exists()) {
+                inputDir.deleteDir()
+            }
+            inputDir.mkdirs()
+
+            // app JAR をコピー
+            def jarFile = jar.archiveFile.get().asFile
+            java.nio.file.Files.copy(
+                jarFile.toPath(),
+                new File(inputDir, jarFile.name).toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
+
+            // 依存JARをコピー
+            for (File f : configurations.runtimeClasspath.getFiles()) {
+                java.nio.file.Files.copy(
+                    f.toPath(),
+                    new File(inputDir, f.getName()).toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+
+            logger.lifecycle("✓ jpackage input prepared: ${inputDir.absolutePath}")
+        }
+    })
+}
+
+// jpackageでWindows用app-imageを作成（app JAR + 依存JAR + 最小JRE）
+tasks.register('createWindowsAppImage') {
+    description = 'Create Windows app-image with jpackage'
+    group = 'distribution'
+    dependsOn 'prepareJpackageInput', 'createMinimalJRE'
+
+    def buildDirProvider = project.layout.buildDirectory
+
+    doLast(new org.gradle.api.Action() {
+        void execute(def task) {
+            def logger = task.logger
+            def buildDirPath = buildDirProvider.get().asFile.absolutePath
+            def inputDir = new File("$buildDirPath/jpackage-input")
+            def runtimeImageDir = new File("$buildDirPath/jre-minimal")
+            def outputDir = new File("$buildDirPath/distribution/jpackage-app-image")
+            def appName = 'JavaFXLogViewer'
+            def mainClassName = application.mainClass.get()
+
+            if (!runtimeImageDir.exists()) {
+                throw new GradleException("Runtime image not found: ${runtimeImageDir.absolutePath}")
+            }
+
+            if (outputDir.exists()) {
+                logger.lifecycle("Removing existing app-image directory: ${outputDir.absolutePath}")
+                outputDir.deleteDir()
+            }
+            outputDir.mkdirs()
+
+            def javaHome = System.getenv('JAVA_HOME') ?: System.getProperty('java.home')
+            if (!javaHome) {
+                throw new GradleException('JAVA_HOME environment variable not set')
+            }
+
+            def jpackageExe = new File(javaHome, 'bin/jpackage.exe').absolutePath
+            def jarFile = jar.archiveFile.get().asFile
+
+            def args = [
+                jpackageExe,
+                '--verbose',
+                '--type', 'app-image',
+                '--name', appName,
+                '--dest', outputDir.absolutePath,
+                '--input', inputDir.absolutePath,
+                '--main-jar', jarFile.name,
+                '--main-class', mainClassName,
+                '--runtime-image', runtimeImageDir.absolutePath,
+                '--icon', new File(project.projectDir, 'src/main/resources/icons/app.ico').absolutePath
+            ]
+
+            if (project.hasProperty('jpackageConsole') && project.property('jpackageConsole').toString().toBoolean()) {
+                args.add('--win-console')
+            }
+
+            // jpackageは1オプション=1文字列なので、--add-opensは結合する
+            def mergedJvmArgs = []
+            def jvmArgs = application.applicationDefaultJvmArgs.collect { it.toString() }
+            for (int i = 0; i < jvmArgs.size(); i++) {
+                def arg = jvmArgs[i]
+                if (arg == '--add-opens' && i + 1 < jvmArgs.size()) {
+                    mergedJvmArgs << "--add-opens=${jvmArgs[i + 1]}"
+                    i++
+                    continue
+                }
+                mergedJvmArgs << arg
+            }
+
+            mergedJvmArgs.each { opt ->
+                args.addAll(['--java-options', opt])
+            }
+
+            def cmd = args.collect { it.toString() }
+            logger.lifecycle("jpackage command: ${cmd.join(' ')}")
+            logger.lifecycle("Output directory: ${outputDir.absolutePath}")
+
+            def process = new ProcessBuilder(cmd)
+                .redirectErrorStream(true)
+                .start()
+
+            def output = process.inputStream.getText('UTF-8')
+            def exitCode = process.waitFor()
+            if (output?.trim()) {
+                logger.lifecycle(output)
+            }
+            if (exitCode != 0) {
+                throw new GradleException("jpackage failed with exit code ${exitCode}")
+            }
+
+            logger.lifecycle("✓ Windows app-image created successfully")
+        }
+    })
 }
 
 task printDistributionInfo {
