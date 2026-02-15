@@ -473,7 +473,8 @@ tasks.register('createWindowsAppImage') {
                 '--input', inputDir.absolutePath,
                 '--main-jar', jarFile.name,
                 '--main-class', mainClassName,
-                '--runtime-image', runtimeImageDir.absolutePath
+                '--runtime-image', runtimeImageDir.absolutePath,
+                '--icon', new File(project.projectDir, 'src/main/resources/icons/app.ico').absolutePath
             ]
 
             if (project.hasProperty('jpackageConsole') && project.property('jpackageConsole').toString().toBoolean()) {

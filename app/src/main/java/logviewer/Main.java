@@ -19,6 +19,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.scene.image.Image;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.scene.control.SplitPane;
@@ -100,6 +101,10 @@ public class Main extends Application {
     @Override
     public void start(Stage primaryStage) {
         BorderPane root = new BorderPane();
+
+        primaryStage.getIcons().add(
+            new Image(Main.class.getResourceAsStream("/icons/app.png"))
+        );
 
         // コントローラー/サービスの初期化
         exportController = new ExportController(fileIOService, progressDialogService, model, table);
