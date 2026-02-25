@@ -131,7 +131,8 @@ public class Main extends Application {
         // 上部コントロール: 単一検索UI
         columnSelector.getItems().add("All");
         columnSelector.getSelectionModel().selectFirst();
-        singleFilterPanel = new SingleFilterPanel(columnSelector, filterField, this::toggleFilterPanel);
+        singleFilterPanel = new SingleFilterPanel(columnSelector, filterField, 
+            this::toggleFilterPanel, this::handleReloadFile);
         HBox topBox = singleFilterPanel;
 
         // テーブル初期化
@@ -251,6 +252,7 @@ public class Main extends Application {
         filterField.clear();
         table.setPlaceholder(new Label("ファイルを開いてください"));
         model.setCurrentFileName("");  // タイトルバーのファイル名をリセット
+        singleFilterPanel.getReloadBtn().setDisable(true);  // 再読み込みボタンを無効化
     }
 
     /**
@@ -273,10 +275,28 @@ public class Main extends Application {
         
         model.addBaseDataRows(result.rows);
         finalizeLoad(result.columns, result.truncated);
+        
+        // 再読み込みボタンを有効化
+        singleFilterPanel.getReloadBtn().setDisable(false);
     }
 
-    /**
-     * ファイル読み込み失敗時の処理を行います。
+    /**     * ファイルを再読み込みします。
+     * 現在開いているファイルを再度読み込みます。
+     */
+    private void handleReloadFile() {
+        Task<FileLoadResult> task = controller.handleReloadFile(
+            this::prepareForFileLoad,
+            this::onFileLoaded,
+            this::onFileLoadFailed
+        );
+        
+        if (task != null) {
+            Stage stage = (Stage) table.getScene().getWindow();
+            progressDialogService.show(task, "ファイル再読み込み中...", stage);
+        }
+    }
+
+    /**     * ファイル読み込み失敗時の処理を行います。
      * 
      * @param ex 例外
      */

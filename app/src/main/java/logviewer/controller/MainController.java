@@ -143,6 +143,25 @@ public class MainController {
     }
 
     /**
+     * 現在読み込んでいるファイルを再読み込みします。
+     * 
+     * @param onStart   読み込み開始時の処理
+     * @param onSuccess 読み込み成功時の処理
+     * @param onFailed  読み込み失敗時の処理
+     * @return 実行中のタスク (ファイルが開かれていない場合は null)
+     */
+    public Task<FileLoadResult> handleReloadFile(
+        Runnable onStart,
+        Consumer<FileLoadResult> onSuccess,
+        Consumer<Throwable> onFailed
+    ) {
+        if (currentLoadPath == null) {
+            return null;
+        }
+        return handleLoadFile(currentLoadPath, onStart, onSuccess, onFailed);
+    }
+
+    /**
      * ファイルを閉じます。
      * テーブルをクリア、ファイルパスをリセット、実行中のタスクをキャンセルします。
      * 

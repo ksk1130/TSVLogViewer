@@ -19,6 +19,7 @@ public class SingleFilterPanel extends HBox {
     private final ComboBox<String> columnSelector;
     private final TextField filterField;
     private final Button clearBtn;
+    private final Button reloadBtn;
     private final Button toggleFilterPanelBtn;
 
     /**
@@ -27,8 +28,10 @@ public class SingleFilterPanel extends HBox {
      * @param columnSelector カラム選択コンボボックス
      * @param filterField フィルタテキストフィールド
      * @param onToggleFilterPanel 複数条件検索パネル切り替え時のコールバック
+     * @param onReload ファイル再読み込み時のコールバック
      */
-    public SingleFilterPanel(ComboBox<String> columnSelector, TextField filterField, Runnable onToggleFilterPanel) {
+    public SingleFilterPanel(ComboBox<String> columnSelector, TextField filterField, 
+                            Runnable onToggleFilterPanel, Runnable onReload) {
         super(8);
         
         this.columnSelector = columnSelector;
@@ -42,6 +45,11 @@ public class SingleFilterPanel extends HBox {
         // クリアボタン
         clearBtn = new Button("Clear");
         clearBtn.setOnAction(e -> filterField.clear());
+
+        // 再読み込みボタン
+        reloadBtn = new Button("🔄 再読み込み");
+        reloadBtn.setOnAction(e -> onReload.run());
+        reloadBtn.setDisable(true);  // 初期状態では無効
 
         // UI設定
         setupUI();
@@ -72,6 +80,7 @@ public class SingleFilterPanel extends HBox {
             new Label("Filter:"),
             filterField,
             clearBtn,
+            reloadBtn,
             spacer
         );
     }
@@ -101,6 +110,15 @@ public class SingleFilterPanel extends HBox {
      */
     public Button getClearBtn() {
         return clearBtn;
+    }
+
+    /**
+     * 再読み込みボタンを取得します。
+     * 
+     * @return 再読み込みボタン
+     */
+    public Button getReloadBtn() {
+        return reloadBtn;
     }
 
     /**
