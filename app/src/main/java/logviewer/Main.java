@@ -33,6 +33,7 @@ import logviewer.service.FileIOService;
 import logviewer.service.FilterService;
 import logviewer.service.FilterSortService;
 import logviewer.service.NavigationService;
+import logviewer.service.SearchService;
 import logviewer.service.SortService;
 import logviewer.service.SelectionService;
 import logviewer.service.FileLoadResult;
@@ -49,8 +50,11 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
@@ -59,14 +63,17 @@ import java.util.function.Predicate;
  * 大容量ファイルにも対応し、フィルタリングやソート、セル選択・コピー機能を備えています。
  */
 public class Main extends Application {
+
     // ===== モデル =====
     private final LogViewerModel model = new LogViewerModel();
+        private static final int SEARCH_PROGRESS_DIALOG_THRESHOLD_ROWS = 20_000;
     
     // ===== サービス =====
     private final FileIOService fileIOService = new FileIOService();
     private final FilterService filterService = new FilterService();
     private final SortService sortService = new SortService();
     private final FilterSortService filterSortService = new FilterSortService();
+    private final SearchService searchService = new SearchService();
     private final ClipboardService clipboardService = new ClipboardService();
     private final NavigationService navigationService = new NavigationService();
     private final DragAndDropHandler dragAndDropHandler = new DragAndDropHandler(fileIOService);
@@ -76,10 +83,15 @@ public class Main extends Application {
     // ===== UI コンポーネント =====
     private final TableView<LogRow> table = new TableView<>();
     private final AtomicReference<Task<?>> currentTask = new AtomicReference<>();
+    private final AtomicReference<Task<?>> currentSearchTask = new AtomicReference<>();
     private ComboBox<String> columnSelector = new ComboBox<>();
     private TextField filterField = new TextField();
+    private TextField searchField = new TextField();
     private TableColumn<LogRow, ?> lineNumberColumn;
     private Label statusLabel;
+    private List<SearchService.CellMatch> searchMatches = Collections.emptyList();
+    private final Set<Integer> searchHitRowIndices = new HashSet<>();
+    private int currentSearchMatchIndex = -1;
 
     // ===== コントローラー・ファクトリ =====
     private ExportController exportController;
@@ -131,8 +143,12 @@ public class Main extends Application {
         // 上部コントロール: 単一検索UI
         columnSelector.getItems().add("All");
         columnSelector.getSelectionModel().selectFirst();
-        singleFilterPanel = new SingleFilterPanel(columnSelector, filterField, 
-            this::toggleFilterPanel, this::handleReloadFile);
+        singleFilterPanel = new SingleFilterPanel(columnSelector, filterField, searchField,
+            this::toggleFilterPanel, this::handleReloadFile,
+            this::executeSearch,
+            this::clearSearchInput,
+            this::goToNextSearchMatch,
+            this::goToPreviousSearchMatch);
         HBox topBox = singleFilterPanel;
 
         // テーブル初期化
@@ -173,6 +189,8 @@ public class Main extends Application {
             model.setSingleFilter(filterField.getText(), newVal);
             refreshAsync();
         });
+        searchField.setOnAction(evt -> executeSearch());
+        searchField.textProperty().addListener((obs, oldVal, newVal) -> clearSearchState());
 
         // ドラッグ＆ドロップの設定
         dragAndDropHandler.attach(table, primaryStage, path -> {
@@ -203,6 +221,13 @@ public class Main extends Application {
         root.setBottom(statusBar);
 
         Scene scene = new Scene(root, 1500, 800);
+        KeyCombination focusSearchShortcut = new KeyCodeCombination(KeyCode.F, KeyCombination.CONTROL_DOWN);
+        scene.getAccelerators().put(focusSearchShortcut, () -> {
+            searchField.requestFocus();
+            searchField.selectAll();
+        });
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.F3), this::goToNextSearchMatch);
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.F3, KeyCombination.SHIFT_DOWN), this::goToPreviousSearchMatch);
         // タイトルバーにファイル名をバインド
         primaryStage.titleProperty().bind(
             Bindings.when(model.currentFileNameProperty().isEmpty())
@@ -250,6 +275,8 @@ public class Main extends Application {
         columnSelector.getItems().setAll("All");
         columnSelector.getSelectionModel().selectFirst();
         filterField.clear();
+        searchField.clear();
+        clearSearchState();
         table.setPlaceholder(new Label("ファイルを開いてください"));
         model.setCurrentFileName("");  // タイトルバーのファイル名をリセット
         singleFilterPanel.getReloadBtn().setDisable(true);  // 再読み込みボタンを無効化
@@ -347,6 +374,7 @@ public class Main extends Application {
         filterConditionPanel.updateColumns(cols);
 
         table.setPlaceholder(new Label("No rows"));
+        clearSearchState();
 
         long elapsedMillis = (System.nanoTime() - model.getOperationStartTime()) / 1_000_000;
         double elapsedSeconds = elapsedMillis / 1000.0;
@@ -511,6 +539,11 @@ public class Main extends Application {
             protected void updateItem(Number item, boolean empty) {
                 super.updateItem(item, empty);
                 setText(empty ? null : String.format(Locale.US, "%,d", item.intValue()));
+                if (!empty && searchHitRowIndices.contains(getIndex())) {
+                    setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: #fff3b0; -fx-font-weight: bold;");
+                } else {
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                }
             }
         };
     }
@@ -609,6 +642,7 @@ public class Main extends Application {
             }
             model.setSkipFilterStatusUpdate(false);
             model.setTableData(result);
+            clearSearchState();
         });
 
         task.setOnFailed(evt -> {
@@ -666,6 +700,154 @@ public class Main extends Application {
         
         // FilterServiceを使用して複数条件を結合
         return filterService.combinePredicates(predicates);
+    }
+
+    /**
+     * 現在の検索条件で一致セルを検索し、先頭の一致へ移動します。
+     */
+    private void executeSearch() {
+        String query = searchField.getText();
+        if (query == null || query.isBlank()) {
+            showAlert("情報", "検索文字列を入力してください。");
+            clearSearchState();
+            return;
+        }
+
+        List<Integer> targetColumns = getSearchTargetColumns();
+        List<LogRow> snapshot = new ArrayList<>(model.getTableData());
+
+        Task<List<SearchService.CellMatch>> searchTask = searchService.findMatchesAsync(snapshot, query, targetColumns);
+        searchTask.setOnSucceeded(evt -> {
+            searchMatches = searchTask.getValue();
+            searchHitRowIndices.clear();
+            for (SearchService.CellMatch match : searchMatches) {
+                searchHitRowIndices.add(match.rowIndex());
+            }
+            table.refresh();
+
+            if (searchMatches.isEmpty()) {
+                currentSearchMatchIndex = -1;
+                model.setStatusMessage(String.format("検索結果: '%s' に一致するセルはありません。", query));
+                return;
+            }
+
+            currentSearchMatchIndex = 0;
+            focusSearchMatch(searchMatches.get(currentSearchMatchIndex));
+        });
+
+        searchTask.setOnFailed(evt -> {
+            Throwable ex = searchTask.getException();
+            String msg = ex == null ? "不明なエラー" : ex.getMessage();
+            Alert a = new Alert(Alert.AlertType.ERROR, "検索に失敗しました: " + msg, ButtonType.OK);
+            a.setHeaderText(null);
+            a.showAndWait();
+        });
+
+        Task<?> previous = currentSearchTask.getAndSet(searchTask);
+        if (previous != null) {
+            previous.cancel();
+        }
+
+        if (snapshot.size() >= SEARCH_PROGRESS_DIALOG_THRESHOLD_ROWS) {
+            Stage stage = (Stage) table.getScene().getWindow();
+            progressDialogService.show(searchTask, "検索中...", stage);
+        }
+
+        Thread t = new Thread(searchTask, "search-task");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * 次の一致セルへ移動します。
+     */
+    private void goToNextSearchMatch() {
+        if (searchMatches.isEmpty()) {
+            executeSearch();
+            return;
+        }
+
+        currentSearchMatchIndex = searchService.nextIndex(currentSearchMatchIndex, searchMatches.size());
+        focusSearchMatch(searchMatches.get(currentSearchMatchIndex));
+    }
+
+    /**
+     * 前の一致セルへ移動します。
+     */
+    private void goToPreviousSearchMatch() {
+        if (searchMatches.isEmpty()) {
+            executeSearch();
+            return;
+        }
+
+        currentSearchMatchIndex = searchService.previousIndex(currentSearchMatchIndex, searchMatches.size());
+        focusSearchMatch(searchMatches.get(currentSearchMatchIndex));
+    }
+
+    private List<Integer> getSearchTargetColumns() {
+        List<Integer> visibleColumns = new ArrayList<>(model.getVisibleColumnIndices());
+        if (!visibleColumns.isEmpty()) {
+            return visibleColumns;
+        }
+
+        List<Integer> allColumns = new ArrayList<>();
+        for (int i = 0; i < model.getColumnCount(); i++) {
+            allColumns.add(i);
+        }
+        return allColumns;
+    }
+
+    private void focusSearchMatch(SearchService.CellMatch match) {
+        int rowIndex = match.rowIndex();
+        int dataColumnIndex = match.columnIndex();
+        int tableColumnIndex = dataColumnIndex + 1; // 0番目はLine列
+
+        if (rowIndex < 0 || rowIndex >= table.getItems().size()) {
+            return;
+        }
+        if (tableColumnIndex < 0 || tableColumnIndex >= table.getColumns().size()) {
+            return;
+        }
+
+        TableColumn<LogRow, ?> targetColumn = table.getColumns().get(tableColumnIndex);
+        if (!targetColumn.isVisible()) {
+            model.setStatusMessage("検索結果のカラムが非表示のため移動できません。");
+            return;
+        }
+
+        table.getSelectionModel().clearAndSelect(rowIndex, targetColumn);
+        table.getFocusModel().focus(rowIndex, targetColumn);
+        table.scrollTo(rowIndex);
+        table.scrollToColumn(targetColumn);
+        table.requestFocus();
+
+        model.setStatusMessage(String.format(
+            "検索結果: %d/%d (Line %,d, Col %d)",
+            currentSearchMatchIndex + 1,
+            searchMatches.size(),
+            table.getItems().get(rowIndex).getLineNumber(),
+            dataColumnIndex
+        ));
+    }
+
+    private void clearSearchState() {
+        searchMatches = Collections.emptyList();
+        searchHitRowIndices.clear();
+        currentSearchMatchIndex = -1;
+        table.refresh();
+    }
+
+    /**
+     * 検索入力と検索結果の状態をクリアします。
+     */
+    private void clearSearchInput() {
+        Task<?> running = currentSearchTask.getAndSet(null);
+        if (running != null) {
+            running.cancel();
+        }
+        searchField.clear();
+        clearSearchState();
+        model.setStatusMessage("検索結果をクリアしました。");
     }
 
     /**

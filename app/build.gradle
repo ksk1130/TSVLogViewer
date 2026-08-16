@@ -11,13 +11,35 @@ repositories {
     mavenCentral()
 }
 
+def detectJavaFxPlatform() {
+    def osName = System.getProperty('os.name').toLowerCase()
+    def arch = (System.getenv('PROCESSOR_ARCHITECTURE') ?: System.getProperty('os.arch')).toLowerCase()
+
+    if (osName.contains('win')) {
+        return arch.contains('arm') ? 'win-aarch64' : 'win'
+    }
+    if (osName.contains('mac')) {
+        return arch.contains('aarch64') || arch.contains('arm64') ? 'mac-aarch64' : 'mac'
+    }
+    if (osName.contains('linux')) {
+        return arch.contains('aarch64') || arch.contains('arm64') ? 'linux-aarch64' : 'linux'
+    }
+
+    throw new GradleException("Unsupported OS for JavaFX: ${osName} (${arch})")
+}
+
+def javafxPlatform = detectJavaFxPlatform()
+def javafxVersion = libs.versions.javafx.get()
+
 dependencies {
     // Use JUnit test framework.
     testImplementation libs.junit
     
-    // JavaFX Controls
-    implementation libs.javafx.controls
-    implementation libs.javafx.fxml
+    // JavaFX: classifierを明示して実体jarを取得する
+    implementation "org.openjfx:javafx-base:${javafxVersion}:${javafxPlatform}"
+    implementation "org.openjfx:javafx-graphics:${javafxVersion}:${javafxPlatform}"
+    implementation "org.openjfx:javafx-controls:${javafxVersion}:${javafxPlatform}"
+    implementation "org.openjfx:javafx-fxml:${javafxVersion}:${javafxPlatform}"
     
     // Lombok for reducing boilerplate code
     compileOnly libs.lombok
@@ -39,6 +61,23 @@ application {
         '--add-opens', 'javafx.controls/javafx.scene.control.skin=ALL-UNNAMED',
         '--add-opens', 'javafx.graphics/javafx.scene=ALL-UNNAMED'
     ]
+}
+
+tasks.named('run', JavaExec) {
+    doFirst {
+        def javafxRuntimeJars = classpath.files.findAll {
+            it.name.startsWith('javafx-') && it.name.endsWith("-${javafxPlatform}.jar")
+        }
+
+        if (javafxRuntimeJars.isEmpty()) {
+            throw new GradleException("JavaFX runtime jars were not found for platform '${javafxPlatform}'.")
+        }
+
+        jvmArgs(
+            '--module-path', javafxRuntimeJars.collect { it.absolutePath }.join(File.pathSeparator),
+            '--add-modules', 'javafx.controls,javafx.fxml'
+        )
+    }
 }
 
 // JREとライブラリを含めた配布用パッケージを作成
